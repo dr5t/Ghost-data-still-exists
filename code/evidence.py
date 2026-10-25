@@ -256,7 +256,6 @@ class EvidenceIndexer:
                 self._ingest_log(fid, full_path, origin, captured_at)
             elif rel_path.endswith(".pdf"):
                 self._ingest_pdf(fid, full_path, origin, captured_at)
-
     def _ingest_sql(self, fid: str, path: str, origin: str, captured_at: str) -> None:
         conn = sqlite3.connect(":memory:")
         try:
@@ -385,6 +384,10 @@ class EvidenceIndexer:
                         idents.add(row_dict["requester_name"].lower())
                     if row_dict.get("name"):
                         idents.add(row_dict["name"].lower())
+                    if row_dict.get("email_hash"):
+                        idents.add(row_dict["email_hash"].lower())
+                    if row_dict.get("source_resource_id"):
+                        idents.add(row_dict["source_resource_id"].lower())
 
                     sys_id = "account_service"
                     cat = "USER_PROFILE"
@@ -655,14 +658,20 @@ class EvidenceIndexer:
                         )
 
         # Handle customer_data_snapshot_bundle files
-        # Handle customer_data_snapshot_bundle files
         elif "snapshots" in data:
             for snap in data["snapshots"]:
+                snap_captured_at = snap.get("captured_at") or captured_at
                 ds = snap.get("data_store", "")
                 coll = snap.get("collection", "")
                 for rec in snap.get("records", []):
                     res_id = rec.get("resource_id", "")
-                    uid = rec.get("subject_reference") or rec.get("customer_reference") or rec.get("user_id") or ""
+                    uid = (
+                        rec.get("subject_reference")
+                        or rec.get("customer_reference")
+                        or rec.get("user_id")
+                        or rec.get("subject_selector")
+                        or ""
+                    )
                     idents = set()
                     if uid:
                         idents.add(uid.lower())
@@ -690,7 +699,7 @@ class EvidenceIndexer:
                                 evidence_id=fid,
                                 file_path=path,
                                 origin=origin,
-                                captured_at=captured_at,
+                                captured_at=snap_captured_at,
                                 system_id="identity_service",
                                 resource_id=res_id,
                                 data_category="ACCOUNT_TOMBSTONE",
@@ -705,7 +714,7 @@ class EvidenceIndexer:
                                 evidence_id=fid,
                                 file_path=path,
                                 origin=origin,
-                                captured_at=captured_at,
+                                captured_at=snap_captured_at,
                                 system_id="security_service",
                                 resource_id=res_id,
                                 data_category="SECURITY_AUDIT_LOG",
@@ -721,7 +730,7 @@ class EvidenceIndexer:
                                 evidence_id=fid,
                                 file_path=path,
                                 origin=origin,
-                                captured_at=captured_at,
+                                captured_at=snap_captured_at,
                                 system_id="account_service",
                                 resource_id=res_id,
                                 data_category="USER_PROFILE",
@@ -736,7 +745,7 @@ class EvidenceIndexer:
                                 evidence_id=fid,
                                 file_path=path,
                                 origin=origin,
-                                captured_at=captured_at,
+                                captured_at=snap_captured_at,
                                 system_id="search_service",
                                 resource_id=res_id,
                                 data_category="SEARCH_INDEX_ENTRY",
@@ -753,7 +762,7 @@ class EvidenceIndexer:
                                 evidence_id=fid,
                                 file_path=path,
                                 origin=origin,
-                                captured_at=captured_at,
+                                captured_at=snap_captured_at,
                                 system_id="analytics_platform",
                                 resource_id=res_id,
                                 data_category="ANALYTICS_PROFILE",
@@ -770,7 +779,7 @@ class EvidenceIndexer:
                                 evidence_id=fid,
                                 file_path=path,
                                 origin=origin,
-                                captured_at=captured_at,
+                                captured_at=snap_captured_at,
                                 system_id="backup_service",
                                 resource_id=res_id,
                                 data_category="BACKUP_ARCHIVE",
@@ -787,7 +796,7 @@ class EvidenceIndexer:
                                 evidence_id=fid,
                                 file_path=path,
                                 origin=origin,
-                                captured_at=captured_at,
+                                captured_at=snap_captured_at,
                                 system_id="export_service",
                                 resource_id=res_id,
                                 data_category="USER_EXPORT",
@@ -804,7 +813,7 @@ class EvidenceIndexer:
                                 evidence_id=fid,
                                 file_path=path,
                                 origin=origin,
-                                captured_at=captured_at,
+                                captured_at=snap_captured_at,
                                 system_id="integration_service",
                                 resource_id=res_id,
                                 data_category="DATA_FLOW",
@@ -821,7 +830,7 @@ class EvidenceIndexer:
                                 evidence_id=fid,
                                 file_path=path,
                                 origin=origin,
-                                captured_at=captured_at,
+                                captured_at=snap_captured_at,
                                 system_id="support_platform",
                                 resource_id=res_id,
                                 data_category="SUPPORT_MESSAGE",
@@ -833,10 +842,18 @@ class EvidenceIndexer:
 
         # Handle flat collections (analytics reports, connector configs, export jobs)
         elif "records" in data:
+            rec_file_ts = data.get("captured_at") or data.get("exported_at") or captured_at
             for rec in data["records"]:
                 res_id = rec.get("resource_id") or rec.get("connector_id") or rec.get("export_id") or ""
+                rec_ts = rec.get("observed_at") or rec.get("timestamp") or rec.get("created_at") or rec_file_ts
                 idents = set()
-                uid = rec.get("user_id") or rec.get("customer_reference") or rec.get("subject_reference") or ""
+                uid = (
+                    rec.get("user_id")
+                    or rec.get("customer_reference")
+                    or rec.get("subject_reference")
+                    or rec.get("subject_selector")
+                    or ""
+                )
                 if uid:
                     idents.add(uid.lower())
                 for em_key in ["email", "customer_email", "owner_email", "requester_email", "email_hash"]:
@@ -873,7 +890,7 @@ class EvidenceIndexer:
                         evidence_id=fid,
                         file_path=path,
                         origin=origin,
-                        captured_at=captured_at,
+                        captured_at=rec_ts,
                         system_id=sys_id,
                         resource_id=res_id,
                         data_category=cat,
@@ -928,6 +945,8 @@ class EvidenceIndexer:
                 line_str = line.strip()
                 if not line_str:
                     continue
+                m_ts = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)", line_str)
+                line_ts = m_ts.group(1) if m_ts else None
                 kvs = {}
                 idx = line_str.find("{")
                 if idx != -1:
@@ -941,6 +960,11 @@ class EvidenceIndexer:
                 if not kvs:
                     continue
 
+                if line_ts:
+                    kvs["_line_ts"] = line_ts
+                elif "timestamp" in kvs:
+                    kvs["_line_ts"] = kvs["timestamp"]
+
                 trace = kvs.get("trace_id") or kvs.get("requestId")
                 if not trace:
                     m = re.search(r'\b(tr-[\w-]+|rb-[\w-]+)\b', line_str)
@@ -951,12 +975,13 @@ class EvidenceIndexer:
                 traces.setdefault(trace_key, []).append(kvs)
 
         for trace_key, group in traces.items():
+            group_ts = max((k["_line_ts"] for k in group if "_line_ts" in k), default=None) or captured_at
             idents = set()
             for kvs in group:
                 for key_name in [
-                    "lookup_key", "match_key", "subject_key", "subject_ref",
+                    "lookup_key", "match_key", "subject_key", "subject_ref", "subject_reference",
                     "correlation_key", "matched_value", "email", "customer_email",
-                    "owner_key", "scan_key", "customer_reference", "user_id"
+                    "owner_key", "scan_key", "customer_reference", "user_id", "requester_email"
                 ]:
                     val = kvs.get(key_name)
                     if val and val != "null":
@@ -975,21 +1000,32 @@ class EvidenceIndexer:
                 continue
 
             for res_id, kvs in res_items:
-                sys_id = (kvs.get("service") or kvs.get("target_system") or "").strip(" \"'\x5c")
+                sys_id = (kvs.get("system") or kvs.get("service") or kvs.get("target_system") or "").strip(" \"'\x5c")
                 event = kvs.get("event", "")
-                cat = "USER_PROFILE"
+                cat = kvs.get("record_type") or "USER_PROFILE"
                 state = "PRESENT"
+                result = kvs.get("result", "").strip(" \"'\x5c")
 
                 if res_id.startswith("account_"):
                     sys_id = "account_service"
                     cat = "USER_PROFILE"
-                    is_absent = any(k.get("rows") == "0" or k.get("http_status") == "404" for k in group)
-                    state = "ABSENT" if is_absent else "PRESENT"
+                    if result in ("NOT_FOUND", "miss", "ABSENT"):
+                        state = "ABSENT"
+                    elif result in ("FOUND", "hit", "PRESENT"):
+                        state = "PRESENT"
+                    else:
+                        is_absent = any(k.get("rows") == "0" or k.get("http_status") == "404" for k in group)
+                        state = "ABSENT" if is_absent else "PRESENT"
                 elif res_id.startswith("search_"):
                     sys_id = "search_service"
                     cat = "SEARCH_INDEX_ENTRY"
-                    is_hit = any(k.get("result") == "hit" or (k.get("total_hits") and k.get("total_hits") != "0") for k in group)
-                    state = "PRESENT" if is_hit else "ABSENT"
+                    if result in ("NOT_FOUND", "miss", "ABSENT"):
+                        state = "ABSENT"
+                    elif result in ("FOUND", "hit", "PRESENT"):
+                        state = "PRESENT"
+                    else:
+                        is_hit = any(k.get("result") == "hit" or (k.get("total_hits") and k.get("total_hits") != "0") for k in group)
+                        state = "PRESENT" if is_hit else "ABSENT"
                 elif res_id.startswith("support_"):
                     sys_id = "support_platform"
                     if any(k.get("source") == "legacy_contact_index" for k in group):
@@ -1002,8 +1038,13 @@ class EvidenceIndexer:
                         state = "PRESENT"
                     else:
                         cat = "SUPPORT_MESSAGE"
-                        has_direct = any(bool(k.get("matched_value") or k.get("requester_email")) for k in group) or any(k.get("marker_found") == "false" for k in group)
-                        state = "PRESENT" if has_direct else "REDACTED"
+                        if result in ("REDACTED", "NOT_FOUND"):
+                            state = "REDACTED"
+                        elif result in ("IDENTIFIABLE", "FOUND", "PRESENT"):
+                            state = "PRESENT"
+                        else:
+                            has_direct = any(bool(k.get("matched_value") or k.get("requester_email")) for k in group) or any(k.get("marker_found") == "false" for k in group)
+                            state = "PRESENT" if has_direct else "REDACTED"
                 elif res_id.startswith("analytics_"):
                     sys_id = "analytics_platform"
                     if any(k.get("email_opt_in") not in (None, "null") for k in group):
@@ -1014,9 +1055,14 @@ class EvidenceIndexer:
                         state = "PRESENT"
                     else:
                         cat = "ANALYTICS_PROFILE"
-                        id_fields = ["email", "phone", "customer_reference", "email_hash", "correlation_key"]
-                        has_id = any(bool(k.get(f)) and k.get(f) != "null" for k in group for f in id_fields)
-                        state = "PRESENT" if has_id else "ANONYMIZED"
+                        if result in ("ANONYMIZED", "NOT_FOUND", "ABSENT"):
+                            state = "ANONYMIZED"
+                        elif result in ("IDENTIFIABLE", "FOUND", "PRESENT"):
+                            state = "PRESENT"
+                        else:
+                            id_fields = ["email", "phone", "customer_reference", "email_hash", "correlation_key"]
+                            has_id = any(bool(k.get(f)) and k.get(f) != "null" for k in group for f in id_fields)
+                            state = "PRESENT" if has_id else "ANONYMIZED"
                 elif res_id.startswith("audit_record_"):
                     sys_id = "security_service"
                     cat = "SECURITY_AUDIT_LOG"
@@ -1024,13 +1070,23 @@ class EvidenceIndexer:
                 elif res_id.startswith("data_flow_"):
                     sys_id = "integration_service"
                     cat = "DATA_FLOW"
-                    enabled = any(k.get("enabled") in ("true", True) or k.get("last_delivery_status") == "delivered" for k in group)
-                    state = "ACTIVE" if enabled else "DISABLED"
+                    if result in ("DISABLED", "NOT_FOUND", "ABSENT"):
+                        state = "DISABLED"
+                    elif result in ("ACTIVE", "FOUND", "PRESENT"):
+                        state = "ACTIVE"
+                    else:
+                        enabled = any(k.get("enabled") in ("true", True) or k.get("last_delivery_status") == "delivered" for k in group)
+                        state = "ACTIVE" if enabled else "DISABLED"
                 elif res_id.startswith("backup_"):
                     sys_id = "backup_service"
                     cat = "BACKUP_ARCHIVE"
-                    is_active = any(k.get("restore_allowed") in ("true", True) or (k.get("eligible") in ("true", True) and k.get("deletion_block") in ("false", False)) for k in group)
-                    state = "ACTIVE" if is_active else "BLOCKED"
+                    if result in ("BLOCKED", "NOT_FOUND", "ABSENT"):
+                        state = "BLOCKED"
+                    elif result in ("ACTIVE", "FOUND", "PRESENT"):
+                        state = "ACTIVE"
+                    else:
+                        is_active = any(k.get("restore_allowed") in ("true", True) or (k.get("eligible") in ("true", True) and k.get("deletion_block") in ("false", False)) for k in group)
+                        state = "ACTIVE" if is_active else "BLOCKED"
                 elif res_id.startswith("tombstone_"):
                     sys_id = "identity_service"
                     cat = "ACCOUNT_TOMBSTONE"
@@ -1040,13 +1096,17 @@ class EvidenceIndexer:
                     sys_id = "export_service"
                     cat = "USER_EXPORT"
                     state = "PRESENT" if any(k.get("available") in ("true", True) or k.get("status") in ("READY", "Ready") for k in group) else "ABSENT"
+                elif res_id.startswith("marketing_") or cat == "MARKETING_PROFILE":
+                    sys_id = "marketing_platform"
+                    cat = "MARKETING_PROFILE"
+                    state = "PRESENT"
 
                 self._add_item(
                     EvidenceItem(
                         evidence_id=fid,
                         file_path=path,
                         origin=origin,
-                        captured_at=captured_at,
+                        captured_at=group_ts,
                         system_id=sys_id,
                         resource_id=res_id,
                         data_category=cat,
@@ -1128,6 +1188,18 @@ class EvidenceIndexer:
             for h in user_graph.email_hashes:
                 if h in self.items_by_identifier:
                     candidate_items.extend(self.items_by_identifier[h])
+
+        # Grounded resource propagation:
+        # Discover all grounded resource IDs associated with this user at or before audit_at
+        user_resources = set()
+        for item in candidate_items:
+            if item.captured_at <= audit_at and item.resource_id:
+                user_resources.add(item.resource_id)
+
+        # Include observations for these grounded resources
+        for res_id in user_resources:
+            for item in self.items_by_resource.get(res_id, []):
+                candidate_items.append(item)
 
         for item in candidate_items:
             # Strict temporal check: captured_at <= audit_at

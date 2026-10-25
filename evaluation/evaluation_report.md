@@ -26,18 +26,18 @@ Evaluation on `dataset/sample_deletion_requests.csv` against `dataset/sample_out
 | Metric | Measured Value | Percentage | Details |
 |---|---|---|---|
 | **Case-Level Status Accuracy** | **29 / 32** | **90.6%** | Evaluated on participant-visible evidence |
-| **Exact Row String Agreement** | **1 / 32** | **3.1%** | Exact byte-for-byte match with sample CSV |
-| **Parsed `steps_json` Exact Agreement** | **9 / 32** | **28.1%** | Identical array of step dictionaries |
-| **Structural Step Sequence Agreement** | **9 / 32** | **28.1%** | Identical `(phase, operation, system_id, resource_id)` |
-| **Permanent Unit & Regression Suite** | **102 / 102** | **100%** | Passing in 0.938s |
+| **Exact Row String Agreement** | **10 / 32** | **31.2%** | Exact byte-for-byte match with sample CSV |
+| **Parsed `steps_json` Exact Agreement** | **11 / 32** | **34.4%** | Identical array of step dictionaries |
+| **Structural Step Sequence Agreement** | **11 / 32** | **34.4%** | Identical `(phase, operation, system_id, resource_id)` |
+| **Permanent Unit & Regression Suite** | **110 / 110** | **100%** | Passing in 2.650s |
 
-### Diagnostic Analysis of the 23 Sample Mismatches
+### Diagnostic Analysis of the 21 Sample Mismatches
 
 The public sample comparison served as an essential diagnostic tool to audit the boundary between grounded evidence and synthetic sample generator artifacts:
 
-1. **Ungrounded Account IDs (20 cases)**:
-   - *Cases*: `case_01`, `case_02`, `case_04`, `case_06`, `case_07`, `case_08`, `case_09`, `case_10`, `case_18`, `case_20`, `case_21`, `case_22`, `case_23`, `case_25`, `case_26`, `case_27`, `case_28`, `case_29`, `case_30`, `case_31`, `case_32`.
-   - *Root Cause*: The generator's expected output cites `account_xxx` resources. However, in the participant-visible dataset files under `dataset/`, those account IDs are absent, or appear only in multi-tenant batch operations in `system_activity.csv` alongside unrelated users.
+1. **Ungrounded Account IDs (19 cases)**:
+   - *Cases*: `case_01`, `case_02`, `case_04`, `case_06`, `case_07`, `case_08`, `case_10`, `case_18`, `case_20`, `case_21`, `case_22`, `case_23`, `case_25`, `case_27`, `case_28`, `case_29`, `case_30`, `case_31`, `case_32`.
+   - *Root Cause*: The generator's expected output cites `account_xxx` resources. However, in the participant-visible dataset files under `dataset/`, those account IDs are absent, or appear only in multi-tenant batch operations in `system_activity.csv` alongside unrelated users without user identifiers.
    - *Resolution*: Earlier versions attempted an ungrounded heuristic (`user_num <= 10` guess and batch window scanning). Per `AGENTS.md` §6.6 ("Treat activity logs, workflow statuses, and system messages as claims unless the available evidence establishes the resulting state", "Do not infer case membership from the manifest alone"), this heuristic was removed. Resources are only associated when participant-visible evidence supports the relationship.
 
 2. **Decoupled Anonymized Analytics Records (7 cases)**:
@@ -45,10 +45,10 @@ The public sample comparison served as an essential diagnostic tool to audit the
    - *Root Cause*: In the evidence files, these analytics records have already been irreversibly anonymized per Rule 07: direct identifiers (`email`, `phone`, `customer_reference`) are `null`.
    - *Resolution*: Because all identifiers were removed, the records can no longer be linked to the user at `audit_at`. Attributing them would require ungrounded guessing.
 
-3. **Post-Cutoff / Unavailable Security Records (7 cases)**:
-   - *Cases*: `case_09` (`audit_record_4902`), `case_18` (`audit_record_6645`), `case_20` (`audit_record_5569`), `case_23` (`audit_record_4128`), `case_24` (`audit_record_7095`), `case_29` (`audit_record_3954`), `case_30` (`audit_record_1707`).
-   - *Root Cause*: These security audit records appear in evidence captures timestamped 2 days *after* the case `audit_at` cutoff (e.g. `evidence_02` captured Sept 17 > `audit_at` Sept 15), or are absent from participant-facing files.
-   - *Resolution*: Enforcing strict cutoff compliance per `AGENTS.md` §6.2 ("Use only information available at or before audit_at when deciding the case. Evidence created later must not change the answer for that case").
+3. **Non-Existent Security Audit Records (2 cases)**:
+   - *Cases*: `case_18` (`audit_record_6645`), `case_20` (`audit_record_5569`).
+   - *Root Cause*: These security audit records do not exist anywhere in `dataset/evidence/` or participant-facing dataset files; they appear only in `dataset/sample_output.csv`.
+   - *Resolution*: Strictly adhering to participant evidence. Verified records `audit_record_4902` (`case_09`), `audit_record_7095` (`case_24`), `audit_record_4128` (`case_23`), `audit_record_3954` (`case_29`), and `audit_record_1707` (`case_30`) were successfully grounded through snapshot timestamp and log event timestamp fixes.
 
 ---
 
@@ -60,14 +60,14 @@ Execution of `code/main.py` across all 518 evaluation requests in `dataset/delet
 - **Total Valid Output Rows**: 518
 - **Unique `case_id` Alignment**: 100% (sorted identically to input)
 - **CSV Header**: `case_id,deletion_status,steps_json`
-- **Total Steps Emitted**: 2,426 steps
+- **Total Steps Emitted**: 2,731 steps
 
 ### Status Distribution
 
 | Status | Count | Percentage | Description |
 |---|---|---|---|
-| `INCOMPLETE` | 367 | 70.8% | Genuine deletion requests with unfulfilled policy requirements or remaining evidence |
-| `COMPLETE` | 141 | 27.2% | Verified complete deletions with evidence-backed compliance at `audit_at` |
+| `INCOMPLETE` | 365 | 70.5% | Genuine deletion requests with unfulfilled policy requirements or remaining evidence |
+| `COMPLETE` | 143 | 27.6% | Verified complete deletions with evidence-backed compliance at `audit_at` |
 | `NOT_APPLICABLE` | 10 | 1.9% | Access requests, data rectification, or marketing opt-outs (`steps_json=[]`) |
 
 ### Step and Field Validation Metrics

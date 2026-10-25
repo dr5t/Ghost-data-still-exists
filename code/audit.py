@@ -24,6 +24,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
@@ -191,8 +192,16 @@ class AuditEngine:
 
         resource_evidence: Dict[str, EvidenceItem] = {}
         for (sys_id, res_id, cat), items in resource_items.items():
-            # Sort chronologically
-            sorted_items = sorted(items, key=lambda x: (x.captured_at, x.evidence_id))
+            # Sort chronologically, preferring evidence items whose file manifest was captured at or before audit_at
+            manifest_dict = getattr(self.evidence, "manifest", {}) if self.evidence else {}
+
+            def sort_key(it: EvidenceItem):
+                manifest_meta = manifest_dict.get(it.evidence_id, {}) if manifest_dict else {}
+                file_cap = manifest_meta.get("captured_at", it.captured_at)
+                file_valid = 1 if file_cap <= audit_at else 0
+                return (file_valid, it.captured_at, it.evidence_id)
+
+            sorted_items = sorted(items, key=sort_key)
             # Check if any item in the group is a violation
             violations_in_group = [it for it in sorted_items if is_violation(it.data_category, it.state)]
             if violations_in_group:

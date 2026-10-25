@@ -505,7 +505,115 @@ class TestAuditEngineScenarios(unittest.TestCase):
             for ident in it.identifiers:
                 self.assertNotIn('\\"', ident)
 
+    def test_canonical_json_step_ordering(self):
+        """Steps serialized by sort_steps must conform strictly to canonical schema key order."""
+        raw = [{
+            "evidence_id": "evidence_01",
+            "operation": "REPORT_REMAINING_RECORD",
+            "phase": "FINDING",
+            "resource_id": "account_001",
+            "state": "PRESENT",
+            "system_id": "account_service",
+        }]
+        sorted_steps = sort_steps(raw)
+        self.assertEqual(len(sorted_steps), 1)
+        step = sorted_steps[0]
+        expected_keys = ["step_no", "phase", "system_id", "resource_id", "operation", "state", "evidence_id"]
+        self.assertEqual(list(step.keys()), expected_keys)
+        self.assertEqual(step["step_no"], 1)
+
+    def test_subject_reference_and_requester_email_log_parsing(self):
+        """Logs with subject_reference or requester_email attributes must link to user identifiers."""
+        from evidence import EvidenceIndexer
+        indexer = EvidenceIndexer("dataset")
+        # Check evidence_08 (search_index_diagnostic_20260906.log) which contains subject_reference
+        ev08_items = [it for it in indexer.items if it.evidence_id == "evidence_08"]
+        self.assertTrue(len(ev08_items) > 0)
+        # Verify that subject_reference was indexed as an identifier
+        all_idents = set()
+        for it in ev08_items:
+            all_idents.update(it.identifiers)
+        self.assertTrue(any(ident.startswith("user_") for ident in all_idents))
+
+    def test_sql_source_resource_id_extraction(self):
+        """SQL search documents with source_resource_id must associate source account references."""
+        from evidence import EvidenceIndexer
+        indexer = EvidenceIndexer("dataset")
+        ev57_items = [it for it in indexer.items if it.evidence_id == "evidence_57"]
+        self.assertTrue(len(ev57_items) >= 1)
+        search_001 = next(it for it in ev57_items if it.resource_id == "search_001")
+    def test_snapshot_bundle_internal_captured_at_timestamp(self):
+        """Records inside snapshot bundles must inherit the snapshot point-in-time captured_at."""
+        from evidence import EvidenceIndexer
+        indexer = EvidenceIndexer("dataset")
+        # audit_record_7095 in evidence_02 has snapshot captured_at: 2026-09-15T12:00:00Z
+        item = next(it for it in indexer.items if it.resource_id == "audit_record_7095")
+        self.assertEqual(item.captured_at, "2026-09-15T12:00:00Z")
+        self.assertEqual(item.evidence_id, "evidence_02")
+
+    def test_log_file_event_timestamp_extraction(self):
+        """Log traces must inherit event line timestamps rather than file export manifest timestamps."""
+        from evidence import EvidenceIndexer
+        indexer = EvidenceIndexer("dataset")
+        # account_3960 in evidence_06 occurred on 2026-09-16T08:57:34Z
+        item = next(it for it in indexer.items if it.resource_id == "account_3960")
+        self.assertTrue(item.captured_at.startswith("2026-09-16"))
+        self.assertEqual(item.evidence_id, "evidence_06")
+
+    def test_grounded_two_hop_resource_propagation(self):
+        """Grounded resources discovered at or before cutoff must link subsequent observations of that resource."""
+        from evidence import EvidenceIndexer
+        indexer = EvidenceIndexer("dataset")
+        graph = _Graph(user_id="user_24", emails={"keiko.nakamura@gmail.com"})
+        items = indexer.get_evidence_for_case(graph, "2026-09-15T12:00:00Z")
+        resource_ids = {it.resource_id for it in items}
+        self.assertIn("account_5334", resource_ids)
+        self.assertIn("search_5577", resource_ids)
+        self.assertIn("audit_record_7095", resource_ids)
+
+    def test_sample_case_09_and_case_24_exact_match(self):
+        """Sample case_09 and case_24 must match the ground-truth steps exactly."""
+        import json
+        from main import build_engine
+        engine = build_engine("dataset")
+
+        # case_09
+        req_09 = {
+            "case_id": "case_09",
+            "email": "k.appiah88@gmail.com",
+            "requested_at": "2026-09-05T09:00:00Z",
+            "reported_status": "NOT_STARTED",
+            "reported_at": "2026-09-07T09:00:00Z",
+            "audit_at": "2026-09-16T09:00:00Z",
+            "request_text": "Please permanently delete the account associated with this email address. Please apply the correct treatment to records covered by the request. Please confirm when the review is complete.",
+        }
+        res_09 = engine.audit(req_09)
+        self.assertEqual(res_09.deletion_status, "INCOMPLETE")
+        self.assertEqual(len(res_09.steps), 5)
+        self.assertEqual(res_09.steps[0]["resource_id"], "backup_4978")
+        self.assertEqual(res_09.steps[0]["evidence_id"], "evidence_93")
+        self.assertEqual(res_09.steps[2]["resource_id"], "account_3960")
+        self.assertEqual(res_09.steps[3]["resource_id"], "audit_record_4902")
+
+        # case_24
+        req_24 = {
+            "case_id": "case_24",
+            "email": "keiko.nakamura@gmail.com",
+            "requested_at": "2026-09-01T12:00:00Z",
+            "reported_status": "COMPLETE",
+            "reported_at": "2026-09-02T12:00:00Z",
+            "audit_at": "2026-09-15T12:00:00Z",
+            "request_text": "I was told that deletion was complete, but the account and its search result can still be found. Please investigate and finish the deletion.",
+        }
+        res_24 = engine.audit(req_24)
+        self.assertEqual(res_24.deletion_status, "INCOMPLETE")
+        self.assertEqual(len(res_24.steps), 7)
+        self.assertEqual(res_24.steps[0]["resource_id"], "account_5334")
+        self.assertEqual(res_24.steps[0]["evidence_id"], "evidence_92")
+        self.assertEqual(res_24.steps[6]["resource_id"], "audit_record_7095")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

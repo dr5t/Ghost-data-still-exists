@@ -101,9 +101,10 @@ def is_violation(data_category: str, current_state: str) -> bool:
     For BACKUP_ARCHIVE, the policy is RETAIN but restore must be blocked.
     An ACTIVE state (restore allowed) is a violation; BLOCKED is compliant.
     """
-    action = get_required_action(data_category)
-    if action is None:
-        return False
+    # Special case: DATA_FLOW – integration_service connectors can recreate data.
+    # An ACTIVE state is a violation; DISABLED is compliant.
+    if data_category == "DATA_FLOW":
+        return current_state == "ACTIVE"
 
     # Special case: BACKUP_ARCHIVE – policy says RETAIN, but restore access
     # must be blocked.  An ACTIVE backup is a violation (restore risk).
@@ -115,6 +116,10 @@ def is_violation(data_category: str, current_state: str) -> bool:
     # A REDACTED tombstone is compliant.
     if data_category == "ACCOUNT_TOMBSTONE":
         return current_state == "PRESENT"
+
+    action = get_required_action(data_category)
+    if action is None:
+        return False
 
     expected = compliant_state(action)
 

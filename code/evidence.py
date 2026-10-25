@@ -265,51 +265,184 @@ class EvidenceIndexer:
             tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
 
             for tbl in tables:
+                if tbl == "snapshot_scope":
+                    continue
                 cols = [c[1] for c in conn.execute(f"PRAGMA table_info({tbl})").fetchall()]
                 rows = conn.execute(f"SELECT * FROM {tbl}").fetchall()
 
                 for row in rows:
                     row_dict = dict(zip(cols, row))
+
+                    # Check if table has record_json
+                    if "record_json" in row_dict:
+                        raw_json = row_dict["record_json"]
+                        try:
+                            rec = json.loads(raw_json)
+                        except Exception:
+                            rec = {}
+                        res_id = row_dict.get("resource_id") or rec.get("resource_id", "")
+                        origin_sys = row_dict.get("origin_system", "")
+                        coll = row_dict.get("collection_name", "")
+
+                        idents = set()
+                        uid = rec.get("user_id") or rec.get("customer_reference") or rec.get("subject_reference") or ""
+                        if uid:
+                            idents.add(uid.lower())
+                        document = rec.get("document") if isinstance(rec.get("document"), dict) else {}
+                        for em_key in ["email", "customer_email", "owner_email", "requester_email"]:
+                            value = rec.get(em_key) or document.get(em_key)
+                            if value:
+                                idents.add(value.lower())
+                        for ref_key in ["customer_reference", "subject_reference", "user_id"]:
+                            value = document.get(ref_key)
+                            if value:
+                                idents.add(value.lower())
+                        if rec.get("phone"):
+                            idents.add(rec["phone"])
+                        if rec.get("full_name"):
+                            idents.add(rec["full_name"].lower())
+                        if rec.get("name"):
+                            idents.add(rec["name"].lower())
+
+                        sys_id = origin_sys or "account_service"
+                        cat = "USER_PROFILE"
+                        state = "PRESENT"
+
+                        if res_id.startswith("account_") or coll == "customer_profiles":
+                            sys_id = "account_service"
+                            cat = "USER_PROFILE"
+                            st = rec.get("account_status", "ACTIVE")
+                            state = "PRESENT" if st in ("ACTIVE", "OPEN") else "ABSENT"
+                        elif res_id.startswith("search_") or coll == "customer_search_documents":
+                            sys_id = "search_service"
+                            cat = "SEARCH_INDEX_ENTRY"
+                            state = "PRESENT"
+                        elif res_id.startswith("analytics_") or coll == "customer_analytics_reports":
+                            sys_id = "analytics_platform"
+                            cat = "ANALYTICS_PROFILE"
+                            has_id = bool(rec.get("email") or rec.get("phone") or rec.get("user_id") or rec.get("customer_reference"))
+                            state = "PRESENT" if has_id else "ANONYMIZED"
+                        elif res_id.startswith("backup_") or coll == "backup_catalog":
+                            sys_id = "backup_service"
+                            cat = "BACKUP_ARCHIVE"
+                            allowed = rec.get("restore_allowed") in ("1", 1, "true", True) or rec.get("status") == "ACTIVE"
+                            state = "ACTIVE" if allowed else "BLOCKED"
+                        elif res_id.startswith("data_flow_") or coll == "connector_configurations":
+                            sys_id = "integration_service"
+                            cat = "DATA_FLOW"
+                            enabled = rec.get("enabled") in ("1", 1, "true", True)
+                            state = "ACTIVE" if enabled else "DISABLED"
+                        elif res_id.startswith("support_") or coll == "support_conversations":
+                            sys_id = "support_platform"
+                            cat = "SUPPORT_MESSAGE"
+                            has_dir = bool(rec.get("requester_email") or rec.get("requester_name") or rec.get("requester_phone"))
+                            state = "PRESENT" if has_dir else "REDACTED"
+                        elif res_id.startswith("audit_record_") or coll == "security_audit_events":
+                            sys_id = "security_service"
+                            cat = "SECURITY_AUDIT_LOG"
+                            state = "PRESENT"
+                        elif res_id.startswith("export_") or coll == "customer_export_jobs":
+                            sys_id = "export_service"
+                            cat = "USER_EXPORT"
+                            state = "PRESENT"
+                        elif res_id.startswith("tombstone_"):
+                            sys_id = "identity_service"
+                            cat = "ACCOUNT_TOMBSTONE"
+                            has_pii = bool(rec.get("email") or rec.get("phone") or rec.get("name") or rec.get("email_hash"))
+                            state = "PRESENT" if has_pii else "REDACTED"
+
+                        if res_id:
+                            self._add_item(
+                                EvidenceItem(
+                                    evidence_id=fid,
+                                    file_path=path,
+                                    origin=origin,
+                                    captured_at=captured_at,
+                                    system_id=sys_id,
+                                    resource_id=res_id,
+                                    data_category=cat,
+                                    state=state,
+                                    identifiers=idents,
+                                    raw_details=f"SQL replica record: {res_id} in {tbl}",
+                                )
+                            )
+                        continue
+
+                    # Direct columns table
                     res_id = row_dict.get("resource_id") or row_dict.get("id") or ""
-                    uid = row_dict.get("user_id") or ""
-                    email = row_dict.get("email") or ""
-                    phone = row_dict.get("phone") or ""
-                    name = row_dict.get("full_name") or row_dict.get("name") or ""
-                    status = row_dict.get("account_status") or row_dict.get("status") or "ACTIVE"
-
-                    category = "USER_PROFILE"
-                    sys_id = "account_service"
-                    if "search" in tbl:
-                        category = "SEARCH_INDEX_ENTRY"
-                        sys_id = "search_service"
-
-                    # If this table is a replica while primary exists, observe state
-                    state = "PRESENT" if status in ("ACTIVE", "OPEN", "FOUND") else "ABSENT"
-
+                    uid = row_dict.get("user_id") or row_dict.get("customer_reference") or row_dict.get("subject_reference") or ""
                     idents = set()
                     if uid:
-                        idents.add(uid)
-                    if email:
-                        idents.add(email.lower())
-                    if phone:
-                        idents.add(phone)
-                    if name:
-                        idents.add(name.lower())
+                        idents.add(uid.lower())
+                    for em_key in ["email", "customer_email", "owner_email", "requester_email"]:
+                        if row_dict.get(em_key):
+                            idents.add(row_dict[em_key].lower())
+                    if row_dict.get("phone"):
+                        idents.add(row_dict["phone"])
+                    if row_dict.get("full_name"):
+                        idents.add(row_dict["full_name"].lower())
+                    if row_dict.get("requester_name"):
+                        idents.add(row_dict["requester_name"].lower())
+                    if row_dict.get("name"):
+                        idents.add(row_dict["name"].lower())
 
-                    self._add_item(
-                        EvidenceItem(
-                            evidence_id=fid,
-                            file_path=path,
-                            origin=origin,
-                            captured_at=captured_at,
-                            system_id=sys_id,
-                            resource_id=res_id,
-                            data_category=category,
-                            state=state,
-                            identifiers=idents,
-                            raw_details=f"SQL table {tbl}: {row_dict}",
+                    sys_id = "account_service"
+                    cat = "USER_PROFILE"
+                    state = "PRESENT"
+
+                    if "backup" in tbl:
+                        sys_id = "backup_service"
+                        cat = "BACKUP_ARCHIVE"
+                        allowed = row_dict.get("restore_allowed") in ("1", 1, "true", True)
+                        state = "ACTIVE" if allowed else "BLOCKED"
+                    elif "connector" in tbl:
+                        sys_id = "integration_service"
+                        cat = "DATA_FLOW"
+                        enabled = row_dict.get("enabled") in ("1", 1, "true", True)
+                        state = "ACTIVE" if enabled else "DISABLED"
+                    elif "analytics" in tbl:
+                        sys_id = "analytics_platform"
+                        cat = "ANALYTICS_PROFILE"
+                        has_id = bool(row_dict.get("email") or row_dict.get("phone") or row_dict.get("customer_reference"))
+                        state = "PRESENT" if has_id else "ANONYMIZED"
+                    elif "export" in tbl:
+                        sys_id = "export_service"
+                        cat = "USER_EXPORT"
+                        state = "PRESENT"
+                    elif "search" in tbl:
+                        sys_id = "search_service"
+                        cat = "SEARCH_INDEX_ENTRY"
+                        state = "PRESENT"
+                    elif "audit" in tbl or "security" in tbl:
+                        sys_id = "security_service"
+                        cat = "SECURITY_AUDIT_LOG"
+                        state = "PRESENT"
+                    elif "support" in tbl:
+                        sys_id = "support_platform"
+                        cat = "SUPPORT_MESSAGE"
+                        has_pii = bool(row_dict.get("requester_email") or row_dict.get("requester_name") or row_dict.get("requester_phone"))
+                        state = "PRESENT" if has_pii else "REDACTED"
+                    elif "profile" in tbl or "account" in tbl:
+                        sys_id = "account_service"
+                        cat = "USER_PROFILE"
+                        st = row_dict.get("account_status", "ACTIVE")
+                        state = "PRESENT" if st in ("ACTIVE", "OPEN") else "ABSENT"
+
+                    if res_id:
+                        self._add_item(
+                            EvidenceItem(
+                                evidence_id=fid,
+                                file_path=path,
+                                origin=origin,
+                                captured_at=captured_at,
+                                system_id=sys_id,
+                                resource_id=res_id,
+                                data_category=cat,
+                                state=state,
+                                identifiers=idents,
+                                raw_details=f"SQL table {tbl}: {row_dict}",
+                            )
                         )
-                    )
         except Exception:
             pass
         finally:
@@ -522,18 +655,32 @@ class EvidenceIndexer:
                         )
 
         # Handle customer_data_snapshot_bundle files
+        # Handle customer_data_snapshot_bundle files
         elif "snapshots" in data:
             for snap in data["snapshots"]:
                 ds = snap.get("data_store", "")
                 coll = snap.get("collection", "")
                 for rec in snap.get("records", []):
                     res_id = rec.get("resource_id", "")
-                    uid = rec.get("subject_reference") or rec.get("user_id") or ""
+                    uid = rec.get("subject_reference") or rec.get("customer_reference") or rec.get("user_id") or ""
                     idents = set()
                     if uid:
-                        idents.add(uid)
-                    if rec.get("email"):
-                        idents.add(rec["email"].lower())
+                        idents.add(uid.lower())
+                    document = rec.get("document") if isinstance(rec.get("document"), dict) else {}
+                    for em_key in ["email", "customer_email", "owner_email", "requester_email"]:
+                        value = rec.get(em_key) or document.get(em_key)
+                        if value:
+                            idents.add(value.lower())
+                    for ref_key in ["customer_reference", "subject_reference", "user_id"]:
+                        value = document.get(ref_key)
+                        if value:
+                            idents.add(value.lower())
+                    if rec.get("phone"):
+                        idents.add(rec["phone"])
+                    if rec.get("full_name"):
+                        idents.add(rec["full_name"].lower())
+                    if rec.get("requester_name"):
+                        idents.add(rec["requester_name"].lower())
 
                     if coll == "deleted_customer_references":
                         has_pii = bool(rec.get("email") or rec.get("name") or rec.get("phone") or rec.get("email_hash"))
@@ -567,18 +714,136 @@ class EvidenceIndexer:
                                 raw_details="security audit event",
                             )
                         )
+                    elif coll == "customer_profiles":
+                        st = "PRESENT" if rec.get("account_status") in ("ACTIVE", "OPEN") else "ABSENT"
+                        self._add_item(
+                            EvidenceItem(
+                                evidence_id=fid,
+                                file_path=path,
+                                origin=origin,
+                                captured_at=captured_at,
+                                system_id="account_service",
+                                resource_id=res_id,
+                                data_category="USER_PROFILE",
+                                state=st,
+                                identifiers=idents,
+                                raw_details=f"snapshot profile status={rec.get('account_status')}",
+                            )
+                        )
+                    elif coll == "customer_search_documents":
+                        self._add_item(
+                            EvidenceItem(
+                                evidence_id=fid,
+                                file_path=path,
+                                origin=origin,
+                                captured_at=captured_at,
+                                system_id="search_service",
+                                resource_id=res_id,
+                                data_category="SEARCH_INDEX_ENTRY",
+                                state="PRESENT",
+                                identifiers=idents,
+                                raw_details="snapshot search document",
+                            )
+                        )
+                    elif coll == "customer_analytics_reports":
+                        has_id = bool(rec.get("email") or rec.get("phone") or rec.get("customer_reference"))
+                        st = "PRESENT" if has_id else "ANONYMIZED"
+                        self._add_item(
+                            EvidenceItem(
+                                evidence_id=fid,
+                                file_path=path,
+                                origin=origin,
+                                captured_at=captured_at,
+                                system_id="analytics_platform",
+                                resource_id=res_id,
+                                data_category="ANALYTICS_PROFILE",
+                                state=st,
+                                identifiers=idents,
+                                raw_details=f"snapshot analytics has_id={has_id}",
+                            )
+                        )
+                    elif coll == "backup_catalog":
+                        is_active = bool(rec.get("restore_allowed") or rec.get("status") == "ACTIVE")
+                        st = "ACTIVE" if is_active else "BLOCKED"
+                        self._add_item(
+                            EvidenceItem(
+                                evidence_id=fid,
+                                file_path=path,
+                                origin=origin,
+                                captured_at=captured_at,
+                                system_id="backup_service",
+                                resource_id=res_id,
+                                data_category="BACKUP_ARCHIVE",
+                                state=st,
+                                identifiers=idents,
+                                raw_details=f"snapshot backup active={is_active}",
+                            )
+                        )
+                    elif coll == "customer_export_jobs":
+                        is_ready = rec.get("status") in ("READY", "Ready", "COMPLETED")
+                        st = "PRESENT" if is_ready else "ABSENT"
+                        self._add_item(
+                            EvidenceItem(
+                                evidence_id=fid,
+                                file_path=path,
+                                origin=origin,
+                                captured_at=captured_at,
+                                system_id="export_service",
+                                resource_id=res_id,
+                                data_category="USER_EXPORT",
+                                state=st,
+                                identifiers=idents,
+                                raw_details=f"snapshot export status={rec.get('status')}",
+                            )
+                        )
+                    elif coll == "connector_configurations":
+                        is_enabled = bool(rec.get("enabled", True))
+                        st = "ACTIVE" if is_enabled else "DISABLED"
+                        self._add_item(
+                            EvidenceItem(
+                                evidence_id=fid,
+                                file_path=path,
+                                origin=origin,
+                                captured_at=captured_at,
+                                system_id="integration_service",
+                                resource_id=res_id,
+                                data_category="DATA_FLOW",
+                                state=st,
+                                identifiers=idents,
+                                raw_details=f"snapshot connector enabled={is_enabled}",
+                            )
+                        )
+                    elif coll == "support_conversations":
+                        has_direct = bool(rec.get("requester_email") or rec.get("requester_name") or rec.get("requester_phone"))
+                        st = "PRESENT" if has_direct else "REDACTED"
+                        self._add_item(
+                            EvidenceItem(
+                                evidence_id=fid,
+                                file_path=path,
+                                origin=origin,
+                                captured_at=captured_at,
+                                system_id="support_platform",
+                                resource_id=res_id,
+                                data_category="SUPPORT_MESSAGE",
+                                state=st,
+                                identifiers=idents,
+                                raw_details=f"snapshot support has_direct={has_direct}",
+                            )
+                        )
 
         # Handle flat collections (analytics reports, connector configs, export jobs)
         elif "records" in data:
             for rec in data["records"]:
                 res_id = rec.get("resource_id") or rec.get("connector_id") or rec.get("export_id") or ""
                 idents = set()
-                if rec.get("user_id"):
-                    idents.add(rec["user_id"])
-                if rec.get("email"):
-                    idents.add(rec["email"].lower())
-                if rec.get("customer_email"):
-                    idents.add(rec["customer_email"].lower())
+                uid = rec.get("user_id") or rec.get("customer_reference") or rec.get("subject_reference") or ""
+                if uid:
+                    idents.add(uid.lower())
+                for em_key in ["email", "customer_email", "owner_email", "requester_email", "email_hash"]:
+                    if rec.get(em_key):
+                        idents.add(rec[em_key].lower())
+                if rec.get("phone"):
+                    idents.add(rec["phone"])
 
                 sys_id = "account_service"
                 cat = "USER_PROFILE"
@@ -596,7 +861,8 @@ class EvidenceIndexer:
                 elif res_id.startswith("export_"):
                     sys_id = "export_service"
                     cat = "USER_EXPORT"
-                    state = "PRESENT" if rec.get("status") in ("READY", "Ready") else "ABSENT"
+                    is_ready = rec.get("download_available") is True or rec.get("status") in ("READY", "Ready", "COMPLETED")
+                    state = "PRESENT" if is_ready else "ABSENT"
                 elif res_id.startswith("audit_record_"):
                     sys_id = "security_service"
                     cat = "SECURITY_AUDIT_LOG"
@@ -655,56 +921,87 @@ class EvidenceIndexer:
 
     def _ingest_log(self, fid: str, path: str, origin: str, captured_at: str) -> None:
         kv_regex = re.compile(r'(\w+)=(?:"([^"]*)"|([^\s]+))')
+        traces: Dict[str, List[dict]] = {}
+
         with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
+            for line_no, line in enumerate(f):
+                line_str = line.strip()
+                if not line_str:
                     continue
-                matches = kv_regex.findall(line)
-                kvs = {k: (v1 or v2) for k, v1, v2 in matches}
-
-                res_id = kvs.get("resource_id", "")
-                sys_id = kvs.get("service") or kvs.get("target_system") or ""
-                event = kvs.get("event", "")
-
-                if not res_id and not kvs.get("lookup_key") and not kvs.get("subject_key"):
+                kvs = {}
+                idx = line_str.find("{")
+                if idx != -1:
+                    try:
+                        kvs = json.loads(line_str[idx:])
+                    except Exception:
+                        pass
+                if not kvs:
+                    matches = kv_regex.findall(line_str)
+                    kvs = {k: (v1 or v2) for k, v1, v2 in matches}
+                if not kvs:
                     continue
 
-                idents = set()
-                for key_name in ["lookup_key", "match_key", "subject_key", "subject_ref", "correlation_key", "matched_value", "email"]:
+                trace = kvs.get("trace_id") or kvs.get("requestId")
+                if not trace:
+                    m = re.search(r'\b(tr-[\w-]+|rb-[\w-]+)\b', line_str)
+                    if m:
+                        trace = m.group(1)
+
+                trace_key = trace if trace else f"line_{line_no}"
+                traces.setdefault(trace_key, []).append(kvs)
+
+        for trace_key, group in traces.items():
+            idents = set()
+            for kvs in group:
+                for key_name in [
+                    "lookup_key", "match_key", "subject_key", "subject_ref",
+                    "correlation_key", "matched_value", "email", "customer_email",
+                    "owner_key", "scan_key", "customer_reference", "user_id"
+                ]:
                     val = kvs.get(key_name)
                     if val and val != "null":
                         idents.add(val.lower())
 
+            # Find all resource_ids in group
+            res_items = []
+            for kvs in group:
+                res_id = kvs.get("resource_id", "")
+                if res_id:
+                    res_items.append((res_id, kvs))
+
+            if not res_items:
+                continue
+
+            for res_id, kvs in res_items:
+                sys_id = kvs.get("service") or kvs.get("target_system") or ""
+                event = kvs.get("event", "")
                 cat = "USER_PROFILE"
                 state = "PRESENT"
 
                 if res_id.startswith("account_"):
                     sys_id = "account_service"
                     cat = "USER_PROFILE"
-                    if kvs.get("rows") == "0" or kvs.get("http_status") == "404":
-                        state = "ABSENT"
-                    else:
-                        state = "PRESENT"
+                    is_absent = any(k.get("rows") == "0" or k.get("http_status") == "404" for k in group)
+                    state = "ABSENT" if is_absent else "PRESENT"
                 elif res_id.startswith("search_"):
                     sys_id = "search_service"
                     cat = "SEARCH_INDEX_ENTRY"
-                    if kvs.get("result") == "hit" or kvs.get("total_hits", "0") != "0":
-                        state = "PRESENT"
-                    else:
-                        state = "ABSENT"
+                    is_hit = any(k.get("result") == "hit" or (k.get("total_hits") and k.get("total_hits") != "0") for k in group)
+                    state = "PRESENT" if is_hit else "ABSENT"
                 elif res_id.startswith("support_"):
                     sys_id = "support_platform"
-                    if "attachment" in event:
+                    if "attachment" in event or any("attachment" in k.get("event", "") for k in group):
                         cat = "SUPPORT_ATTACHMENT"
                         state = "PRESENT"
                     else:
                         cat = "SUPPORT_MESSAGE"
-                        has_direct = bool(kvs.get("matched_value") or kvs.get("requester_email"))
+                        has_direct = any(bool(k.get("matched_value") or k.get("requester_email")) for k in group) or any(k.get("marker_found") == "false" for k in group)
                         state = "PRESENT" if has_direct else "REDACTED"
                 elif res_id.startswith("analytics_"):
                     sys_id = "analytics_platform"
                     cat = "ANALYTICS_PROFILE"
-                    has_id = bool(kvs.get("email") or kvs.get("phone") or kvs.get("customer_reference"))
+                    id_fields = ["email", "phone", "customer_reference", "email_hash", "correlation_key"]
+                    has_id = any(bool(k.get(f)) and k.get(f) != "null" for k in group for f in id_fields)
                     state = "PRESENT" if has_id else "ANONYMIZED"
                 elif res_id.startswith("audit_record_"):
                     sys_id = "security_service"
@@ -713,28 +1010,37 @@ class EvidenceIndexer:
                 elif res_id.startswith("data_flow_"):
                     sys_id = "integration_service"
                     cat = "DATA_FLOW"
-                    enabled = kvs.get("enabled") == "true" or kvs.get("last_delivery_status") == "delivered"
+                    enabled = any(k.get("enabled") in ("true", True) or k.get("last_delivery_status") == "delivered" for k in group)
                     state = "ACTIVE" if enabled else "DISABLED"
                 elif res_id.startswith("backup_"):
                     sys_id = "backup_service"
                     cat = "BACKUP_ARCHIVE"
-                    state = "ACTIVE" if kvs.get("restore_allowed") == "true" else "BLOCKED"
+                    is_active = any(k.get("restore_allowed") in ("true", True) or (k.get("eligible") in ("true", True) and k.get("deletion_block") in ("false", False)) for k in group)
+                    state = "ACTIVE" if is_active else "BLOCKED"
+                elif res_id.startswith("tombstone_"):
+                    sys_id = "identity_service"
+                    cat = "ACCOUNT_TOMBSTONE"
+                    has_pii = any(bool(k.get("email") or k.get("phone") or k.get("name") or k.get("email_hash")) for k in group)
+                    state = "PRESENT" if has_pii else "REDACTED"
+                elif res_id.startswith("export_"):
+                    sys_id = "export_service"
+                    cat = "USER_EXPORT"
+                    state = "PRESENT" if any(k.get("available") in ("true", True) or k.get("status") in ("READY", "Ready") for k in group) else "ABSENT"
 
-                if res_id:
-                    self._add_item(
-                        EvidenceItem(
-                            evidence_id=fid,
-                            file_path=path,
-                            origin=origin,
-                            captured_at=captured_at,
-                            system_id=sys_id,
-                            resource_id=res_id,
-                            data_category=cat,
-                            state=state,
-                            identifiers=idents,
-                            raw_details=line.strip()[:150],
-                        )
+                self._add_item(
+                    EvidenceItem(
+                        evidence_id=fid,
+                        file_path=path,
+                        origin=origin,
+                        captured_at=captured_at,
+                        system_id=sys_id,
+                        resource_id=res_id,
+                        data_category=cat,
+                        state=state,
+                        identifiers=idents,
+                        raw_details=f"trace={trace_key} res={res_id} state={state}",
                     )
+                )
 
     def _ingest_pdf(self, fid: str, path: str, origin: str, captured_at: str) -> None:
         if not pypdf:
@@ -805,6 +1111,9 @@ class EvidenceIndexer:
             for ph in user_graph.phones:
                 if ph in self.items_by_identifier:
                     candidate_items.extend(self.items_by_identifier[ph])
+            for h in user_graph.email_hashes:
+                if h in self.items_by_identifier:
+                    candidate_items.extend(self.items_by_identifier[h])
 
         for item in candidate_items:
             # Strict temporal check: captured_at <= audit_at

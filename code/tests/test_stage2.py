@@ -81,6 +81,19 @@ class TestIntentClassification(unittest.TestCase):
         )
         self.assertEqual(intent, "DELETION")
 
+    def test_deletion_audit_wording_without_delete_inflection(self):
+        intent, _ = classify_intent(
+            "I changed the email before deleting it. Please check that nothing "
+            "tied to the old address was left behind."
+        )
+        self.assertEqual(intent, "DELETION")
+
+    def test_targeted_search_removal_is_deletion(self):
+        intent, _ = classify_intent(
+            "My profile is gone, but it still appears in search. Please remove that search result."
+        )
+        self.assertEqual(intent, "DELETION")
+
     # ── Negative / non-deletion intents ────────────────────────────
 
     def test_download_export(self):
@@ -238,6 +251,12 @@ class TestPolicyEngine(unittest.TestCase):
 
     def test_backup_blocked_ok(self):
         self.assertFalse(is_violation("BACKUP_ARCHIVE", "BLOCKED"))
+
+    def test_data_flow_active_is_violation(self):
+        self.assertTrue(is_violation("DATA_FLOW", "ACTIVE"))
+
+    def test_data_flow_disabled_ok(self):
+        self.assertFalse(is_violation("DATA_FLOW", "DISABLED"))
 
     def test_tombstone_present_is_violation(self):
         self.assertTrue(is_violation("ACCOUNT_TOMBSTONE", "PRESENT"))

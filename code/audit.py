@@ -87,9 +87,18 @@ def sort_steps(steps: List[dict]) -> List[dict]:
         )
 
     sorted_list = sorted(steps, key=key_fn)
+    ordered_steps = []
     for idx, s in enumerate(sorted_list, start=1):
-        s["step_no"] = idx
-    return sorted_list
+        ordered_steps.append({
+            "step_no": idx,
+            "phase": s["phase"],
+            "system_id": s["system_id"],
+            "resource_id": s["resource_id"],
+            "operation": s["operation"],
+            "state": s["state"],
+            "evidence_id": s.get("evidence_id", ""),
+        })
+    return ordered_steps
 
 
 @dataclass(frozen=True)
@@ -196,58 +205,6 @@ class AuditEngine:
             else:
                 resource_evidence[res_id] = sorted_items[-1]
 
-        # Account resource resolution for real dataset evaluation:
-        # Only synthesize account absence if running with real manifest and no account is in evidence
-        has_real_manifest = hasattr(self.evidence, "manifest") and bool(getattr(self.evidence, "manifest", None))
-        user_id_str = getattr(user_graph, "user_id", "") or ""
-        user_num = None
-        if user_id_str.startswith("user_"):
-            try:
-                user_num = int(user_id_str.split("_")[1])
-            except Exception:
-                pass
-
-        if has_real_manifest:
-            account_res_id = None
-            for res_id, item in resource_evidence.items():
-                if item.system_id == "account_service":
-                    account_res_id = res_id
-                    break
-
-            if not account_res_id:
-                if user_num is not None and 1 <= user_num <= 10:
-                    account_res_id = f"account_{user_num:03d}"
-                elif requested_at and reported_at:
-                    for a in self.system_activities:
-                        if requested_at <= a["event_time"] <= reported_at:
-                            if a["source_system"] == "deletion_worker" and a["target_system"] == "account_service":
-                                account_res_id = a["resource_id"]
-                                break
-
-            if account_res_id and account_res_id not in resource_evidence:
-                ev_id = ""
-                for fid, meta in self.evidence.manifest.items():
-                    if "customer_accounts_failover_replica" in meta.get("file_path", "") and meta.get("captured_at", "") <= audit_at:
-                        ev_id = fid
-                        break
-                if not ev_id:
-                    for fid, meta in self.evidence.manifest.items():
-                        if "customer_data_inventory" in meta.get("file_path", "") and meta.get("captured_at", "") <= audit_at:
-                            ev_id = fid
-                            break
-
-                if ev_id:
-                    resource_evidence[account_res_id] = EvidenceItem(
-                        evidence_id=ev_id,
-                        file_path="",
-                        origin="account_service",
-                        captured_at=audit_at,
-                        system_id="account_service",
-                        resource_id=account_res_id,
-                        data_category="USER_PROFILE",
-                        state="ABSENT",
-                        identifiers=getattr(user_graph, "emails", set()) | {user_id_str},
-                    )
 
         # Absence of linked evidence is not proof of deletion
         if not resource_evidence:
@@ -330,4 +287,4 @@ def write_output(results: Iterable[AuditResult], path: Path | str) -> None:
         writer = csv.writer(f)
         writer.writerow(["case_id", "deletion_status", "steps_json"])
         for r in sorted_results:
-            writer.writerow([r.case_id, r.deletion_status, json.dumps(list(r.steps))])
+            writer.writerow([r.case_id, r.deletion_status, json.dumps(list(r.steps), separators=(",", ":"))])

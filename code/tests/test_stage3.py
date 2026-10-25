@@ -385,6 +385,127 @@ class TestAuditEngineScenarios(unittest.TestCase):
         self.assertEqual(result.steps[0]["operation"], "REPORT_EXPOSED_PII")
         self.assertEqual(result.steps[0]["resource_id"], "tombstone_001")
 
+    def test_unrelated_batch_activity_not_assigned_as_user_account(self):
+        """Unrelated accounts in concurrent activity batches must never be assigned to a requester."""
+        items = [
+            _item("backup_4978", "BACKUP_ARCHIVE", "ACTIVE", "evidence_93", "2026-09-16T08:37:39Z"),
+        ]
+        graph = _Graph(user_id="user_61", emails={"k.appiah88@gmail.com"})
+        engine = AuditEngine(_Resolver(graph=graph), _Evidence(items))
+        # Provide unrelated activity in batch window
+        engine.system_activities = [
+            {
+                "activity_id": "activity_3657",
+                "event_time": "2026-09-05T10:50:10Z",
+                "event_type": "DELETE_RECORD",
+                "source_system": "deletion_worker",
+                "target_system": "account_service",
+                "resource_id": "account_294",
+                "reported_result": "PARTIAL",
+                "details": "Deletion worker submitted primary profile account_294 to account_service."
+            }
+        ]
+        req = {
+            "case_id": "case_09",
+            "email": "k.appiah88@gmail.com",
+            "requested_at": "2026-09-05T09:00:00Z",
+            "reported_status": "NOT_STARTED",
+            "reported_at": "2026-09-07T09:00:00Z",
+            "audit_at": "2026-09-16T09:00:00Z",
+            "request_text": "Please delete my account.",
+        }
+        result = engine.audit(req)
+        # account_294 must NOT be assigned as a verified step
+        step_resources = [s["resource_id"] for s in result.steps]
+        self.assertNotIn("account_294", step_resources)
+
+    def test_ungrounded_user_number_account_not_synthesized(self):
+        """Account IDs must not be guessed or synthesized from user ID numbers without evidence."""
+        items = [
+            _item("tombstone_001", "ACCOUNT_TOMBSTONE", "REDACTED", "evidence_tomb", "2026-09-01T00:00:00Z", system="identity_service"),
+        ]
+        graph = _Graph(user_id="user_05", emails={"leila.haddad@yahoo.com"})
+        engine = AuditEngine(_Resolver(graph=graph), _Evidence(items))
+        req = {
+            "case_id": "case_05",
+            "email": "leila.haddad@yahoo.com",
+            "requested_at": "2026-09-01T00:00:00Z",
+            "reported_status": "COMPLETE",
+            "reported_at": "2026-09-02T00:00:00Z",
+            "audit_at": "2026-09-03T00:00:00Z",
+            "request_text": "Please delete my account and personal data.",
+        }
+        result = engine.audit(req)
+        step_resources = [s["resource_id"] for s in result.steps]
+        # account_005 must not be synthesized if not in evidence
+        self.assertNotIn("account_005", step_resources)
+
+    def test_audit_cutoff_enforcement_ignores_post_cutoff_evidence(self):
+        """Evidence captured strictly after audit_at must never establish state at audit_at."""
+        items = [
+            # Pre-cutoff violation
+            _item("profile_rec_1", "USER_PROFILE", "PRESENT", "evidence_pre", "2026-09-10T00:00:00Z", system="account_service"),
+            # Post-cutoff record claiming deletion or compliance
+            _item("profile_rec_1", "USER_PROFILE", "ABSENT", "evidence_post", "2026-09-20T00:00:00Z", system="account_service"),
+        ]
+        graph = _Graph(user_id="user_10", emails={"test@example.org"})
+        engine = AuditEngine(_Resolver(graph=graph), _Evidence(items))
+        req = {
+            "case_id": "case_test_cutoff",
+            "email": "test@example.org",
+            "requested_at": "2026-09-05T00:00:00Z",
+            "reported_status": "PARTIALLY_COMPLETE",
+            "reported_at": "2026-09-12T00:00:00Z",
+            "audit_at": "2026-09-15T00:00:00Z",
+            "request_text": "I request complete deletion of my account.",
+        }
+        result = engine.audit(req)
+        # At audit_at (2026-09-15), evidence_post has not occurred yet; state is INCOMPLETE due to evidence_pre
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        finding_ev_ids = [s["evidence_id"] for s in result.steps if s["phase"] == "FINDING"]
+        self.assertIn("evidence_pre", finding_ev_ids)
+        self.assertNotIn("evidence_post", finding_ev_ids)
+
+    def test_anonymized_analytics_without_linkage_not_attributed(self):
+        """Analytics profiles stripped of user identifiers must not be attributed to requester."""
+        from evidence import EvidenceIndexer
+        indexer = EvidenceIndexer("dataset")
+        graph = _Graph(user_id="user_20", emails={"mariam.al-mansoori@gmail.com"})
+        items = indexer.get_evidence_for_case(graph, "2026-09-15T00:00:00Z")
+        # Ensure that decoupled analytics records (e.g. analytics_9406) without identifiers are not linked
+        linked_resources = {it.resource_id for it in items}
+        self.assertNotIn("analytics_9406", linked_resources)
+
+    def test_pdf_evidence_indexing_extracts_records(self):
+        """PDF evidence files (e.g. evidence_55 and evidence_58) must be properly parsed and indexed."""
+        from evidence import EvidenceIndexer
+        indexer = EvidenceIndexer("dataset")
+        ev55_items = [it for it in indexer.items if it.evidence_id == "evidence_55"]
+        self.assertTrue(len(ev55_items) >= 1)
+        self.assertEqual(ev55_items[0].resource_id, "audit_record_003")
+        self.assertIn("user_03", ev55_items[0].identifiers)
+
+        ev58_items = [it for it in indexer.items if it.evidence_id == "evidence_58"]
+        self.assertTrue(len(ev58_items) >= 1)
+        self.assertEqual(ev58_items[0].resource_id, "support_001")
+        self.assertIn("priya.raman@gmail.com", ev58_items[0].identifiers)
+
+    def test_escaped_quote_log_parsing_extracts_clean_identifiers(self):
+        """Log records with embedded escaped quotes must be cleaned to match user tokens."""
+        from evidence import EvidenceIndexer
+        indexer = EvidenceIndexer("dataset")
+        # Check that audit_record_6863 in evidence_25 was stripped of backslashes and quotes
+        matched = [it for it in indexer.items if it.resource_id == "audit_record_6863"]
+        self.assertTrue(len(matched) >= 1)
+        self.assertEqual(matched[0].resource_id, "audit_record_6863")
+        self.assertIn("user_261", matched[0].identifiers)
+        # Ensure that no indexed items contain escaped backslashes in resource_id or identifiers
+        for it in indexer.items:
+            self.assertNotIn('\\"', it.resource_id)
+            for ident in it.identifiers:
+                self.assertNotIn('\\"', ident)
+
 
 if __name__ == "__main__":
     unittest.main()
+

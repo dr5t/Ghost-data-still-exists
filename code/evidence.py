@@ -937,7 +937,7 @@ class EvidenceIndexer:
                         pass
                 if not kvs:
                     matches = kv_regex.findall(line_str)
-                    kvs = {k: (v1 or v2) for k, v1, v2 in matches}
+                    kvs = {k.strip(" \"'\x5c"): (v1 or v2).strip(" \"'\x5c") for k, v1, v2 in matches}
                 if not kvs:
                     continue
 
@@ -960,12 +960,14 @@ class EvidenceIndexer:
                 ]:
                     val = kvs.get(key_name)
                     if val and val != "null":
-                        idents.add(val.lower())
+                        clean_val = val.strip(" \"'\x5c").lower()
+                        if clean_val:
+                            idents.add(clean_val)
 
             # Find all resource_ids in group
             res_items = []
             for kvs in group:
-                res_id = kvs.get("resource_id", "")
+                res_id = kvs.get("resource_id", "").strip(" \"'\x5c")
                 if res_id:
                     res_items.append((res_id, kvs))
 
@@ -973,7 +975,7 @@ class EvidenceIndexer:
                 continue
 
             for res_id, kvs in res_items:
-                sys_id = kvs.get("service") or kvs.get("target_system") or ""
+                sys_id = (kvs.get("service") or kvs.get("target_system") or "").strip(" \"'\x5c")
                 event = kvs.get("event", "")
                 cat = "USER_PROFILE"
                 state = "PRESENT"

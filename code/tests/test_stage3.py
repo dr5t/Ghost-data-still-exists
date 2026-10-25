@@ -646,8 +646,112 @@ class TestAuditEngineScenarios(unittest.TestCase):
                             f"Case {req['case_id']} cited post-cutoff {eid} (captured_at={file_cap} > audit_at={audit_at})",
                         )
 
+    def test_two_hop_source_resource_id_linking(self):
+        """Search records link to their source account without inferring absence from reference alone."""
+        from evidence import EvidenceIndexer
+        from main import build_engine
+        indexer = EvidenceIndexer("dataset")
+
+        # 1. SQL row reflects actual search document state: PRESENT in search_service
+        search_001 = next(it for it in indexer.items if it.resource_id == "search_001")
+        self.assertEqual(search_001.system_id, "search_service")
+        self.assertEqual(search_001.state, "PRESENT")
+        self.assertTrue("account_006" in search_001.identifiers)
+
+        # 2. No unsupported ABSENT account item is emitted from evidence_57
+        ev57_accounts = [it for it in indexer.items if it.resource_id == "account_006" and it.evidence_id == "evidence_57"]
+        self.assertEqual(len(ev57_accounts), 0)
+
+        # 3. Two-hop discovery ensures account_006 is verified absent in post-remediation verification
+        engine = build_engine("dataset")
+        with open("dataset/sample_deletion_requests.csv", encoding="utf-8") as f:
+            import csv
+            case_06 = next(r for r in csv.DictReader(f) if r["case_id"] == "case_06")
+        res = engine.audit(case_06)
+        account_step = next(s for s in res.steps if s["resource_id"] == "account_006")
+        self.assertEqual(account_step["phase"], "VERIFICATION")
+        self.assertEqual(account_step["operation"], "VERIFY_RECORD_ABSENT")
+        self.assertEqual(account_step["state"], "ABSENT")
+        self.assertEqual(account_step["evidence_id"], "")
+
+    def test_post_remediation_verification_contract(self):
+        """Incomplete cases must emit pending verification steps (evidence_id=''), never proof of completion."""
+        from main import build_engine
+        import csv
+        engine = build_engine("dataset")
+
+        with open("dataset/sample_deletion_requests.csv", encoding="utf-8") as f:
+            for req in csv.DictReader(f):
+                res = engine.audit(req)
+                if res.deletion_status == "INCOMPLETE":
+                    for step in res.steps:
+                        if step["phase"] in ("REMEDIATION", "VERIFICATION"):
+                            self.assertEqual(
+                                step["evidence_id"], "",
+                                f"Incomplete case {res.case_id} step {step['step_no']} has non-empty evidence_id",
+                            )
+                        elif step["phase"] == "FINDING":
+                            self.assertNotEqual(
+                                step["evidence_id"], "",
+                                f"Incomplete case {res.case_id} finding {step['step_no']} has empty evidence_id",
+                            )
+                elif res.deletion_status == "COMPLETE":
+                    for step in res.steps:
+                        self.assertEqual(step["phase"], "VERIFICATION")
+                        self.assertNotEqual(
+                            step["evidence_id"], "",
+                            f"Complete case {res.case_id} step {step['step_no']} has empty evidence_id",
+                        )
+
+    def test_exact_row_and_parsed_json_key_order_contract(self):
+        """Verifies canonical key order per §6.3 and proves case_05/06 parsed json agreement."""
+        import csv
+        import json
+        from pathlib import Path
+        from audit import write_output, AuditResult
+        from main import build_engine
+
+        engine = build_engine("dataset")
+        with open("dataset/sample_deletion_requests.csv", encoding="utf-8") as f:
+            requests = {r["case_id"]: r for r in csv.DictReader(f)}
+        with open("dataset/sample_output.csv", encoding="utf-8") as f:
+            expected = {r["case_id"]: r for r in csv.DictReader(f)}
+
+        # Audit case_05 and case_06
+        res_05 = engine.audit(requests["case_05"])
+        res_06 = engine.audit(requests["case_06"])
+
+        # 1. 100% semantic parsed steps agreement
+        self.assertEqual(list(res_05.steps), json.loads(expected["case_05"]["steps_json"]))
+        self.assertEqual(list(res_06.steps), json.loads(expected["case_06"]["steps_json"]))
+        self.assertEqual(res_05.deletion_status, expected["case_05"]["deletion_status"])
+        self.assertEqual(res_06.deletion_status, expected["case_06"]["deletion_status"])
+
+        # 2. Output serialization uses canonical §6.3 schema key order
+        canonical_keys = ["step_no", "phase", "system_id", "resource_id", "operation", "state", "evidence_id"]
+        for s in res_05.steps:
+            self.assertEqual(list(s.keys()), canonical_keys)
+        for s in res_06.steps:
+            self.assertEqual(list(s.keys()), canonical_keys)
+
+        # 3. Test writing output to temporary file uses LF line endings
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", delete=False, encoding="utf-8") as tmp:
+            tmp_path = tmp.name
+        try:
+            write_output([res_05, res_06], tmp_path)
+            with open(tmp_path, "rb") as f:
+                content = f.read()
+            self.assertIn(b"\n", content)
+            self.assertNotIn(b"\r\n", content)
+        finally:
+            import os
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

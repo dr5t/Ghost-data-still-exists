@@ -27,18 +27,19 @@ Evaluation on `dataset/sample_deletion_requests.csv` against `dataset/sample_out
 |---|---|---|---|
 | **Case-Level Status Accuracy** | **29 / 32** | **90.6%** | Evaluated on participant-visible evidence |
 | **Exact Row String Agreement** | **10 / 32** | **31.2%** | Exact byte-for-byte match with sample CSV |
-| **Parsed `steps_json` Exact Agreement** | **11 / 32** | **34.4%** | Identical array of step dictionaries |
-| **Structural Step Sequence Agreement** | **11 / 32** | **34.4%** | Identical `(phase, operation, system_id, resource_id)` |
-| **Permanent Unit & Regression Suite** | **112 / 112** | **100%** | Passing in 3.530s |
+| **Parsed `steps_json` Exact Agreement** | **12 / 32** | **37.5%** | Identical array of step dictionaries |
+| **Structural Step Sequence Agreement** | **12 / 32** | **37.5%** | Identical `(phase, operation, system_id, resource_id)` |
+| **Permanent Unit & Regression Suite** | **115 / 115** | **100%** | Passing in 2.781s |
 
-### Diagnostic Analysis of the 21 Sample Mismatches
+### Diagnostic Analysis of the 20 Sample Mismatches
 
 The public sample comparison served as an essential diagnostic tool to audit the boundary between grounded evidence and synthetic sample generator artifacts:
 
-1. **Ungrounded Account IDs (19 cases)**:
-   - *Cases*: `case_01`, `case_02`, `case_04`, `case_06`, `case_07`, `case_08`, `case_10`, `case_18`, `case_20`, `case_21`, `case_22`, `case_23`, `case_25`, `case_27`, `case_28`, `case_29`, `case_30`, `case_31`, `case_32`.
+1. **Ungrounded Account IDs (18 cases)**:
+   - *Cases*: `case_01`, `case_02`, `case_04`, `case_07`, `case_08`, `case_10`, `case_18`, `case_20`, `case_21`, `case_22`, `case_23`, `case_25`, `case_27`, `case_28`, `case_29`, `case_30`, `case_31`, `case_32`.
    - *Root Cause*: The generator's expected output cites `account_xxx` resources. However, in the participant-visible dataset files under `dataset/`, those account IDs are absent, or appear only in multi-tenant batch operations in `system_activity.csv` alongside unrelated users without user identifiers.
    - *Resolution*: Earlier versions attempted an ungrounded heuristic (`user_num <= 10` guess and batch window scanning). Per `AGENTS.md` §6.6 ("Treat activity logs, workflow statuses, and system messages as claims unless the available evidence establishes the resulting state", "Do not infer case membership from the manifest alone"), this heuristic was removed. Resources are only associated when participant-visible evidence supports the relationship.
+   - *Case 06 Grounding*: In `case_06`, search document metadata (`search_001` linking to `account_006`) provides grounded two-hop evidence to verify `account_006` absent in post-remediation verification, achieving 100% parsed step agreement without heuristics.
 
 2. **Decoupled Anonymized Analytics Records (7 cases)**:
    - *Cases*: `case_03` (`analytics_9406`), `case_04` (`analytics_901`), `case_21` (`analytics_5335`), `case_25` (`analytics_1895`), `case_26` (`analytics_4566`), `case_27` (`analytics_4574`), `case_28` (`analytics_6077`).
@@ -49,6 +50,7 @@ The public sample comparison served as an essential diagnostic tool to audit the
    - *Cases*: `case_18` (`audit_record_6645`), `case_20` (`audit_record_5569`).
    - *Root Cause*: These security audit records do not exist anywhere in `dataset/evidence/` or participant-facing dataset files; they appear only in `dataset/sample_output.csv`.
    - *Resolution*: Strictly adhering to participant evidence. Verified records `audit_record_4902` (`case_09`), `audit_record_7095` (`case_24`), `audit_record_4128` (`case_23`), `audit_record_3954` (`case_29`), and `audit_record_1707` (`case_30`) were successfully grounded through snapshot timestamp and log event timestamp fixes.
+
 
 ---
 
@@ -134,4 +136,8 @@ To test edge cases beyond the public sample, three comprehensive test cases were
 5. **Log Record Escaped Quote Ingestion Defect**:
    - *Failure*: In `_ingest_log`, 343 records in `dataset/evidence/logs/` contained embedded escaped quotes (e.g. `correlation_key=\"user_261\"` and `resource_id=\"audit_record_6863\"`), leaving unstripped literal backslashes and quotes that prevented token matching.
    - *Fix*: Standardized log parsing to strip escaped quotes from extracted key-value pairs, resolving 72 previously unlinked evidence steps across the evaluation dataset.
+6. **Two-Hop Source Account Post-Remediation Verification & POSIX LF Line Endings**:
+   - *Failure*: Incomplete cases where dependent resources (e.g. search documents) reference an upstream source account omitted the post-remediation verification assertion for the source account, causing parsed step divergence on `case_06`. Additionally, default CSV writer line terminators could emit platform-dependent CRLF line endings.
+   - *Fix*: Added two-hop source account verification linking in `code/audit.py` to ensure dependent accounts are verified absent post-remediation. Standardized CSV output with `lineterminator="\n"`, locking in contract compliance and adding regression tests (`test_two_hop_source_resource_id_linking`, `test_post_remediation_verification_contract`, `test_exact_row_and_parsed_json_key_order_contract`) for 115 total passing tests.
+
 

@@ -45,10 +45,10 @@ Verifiable execution metrics measured during the generation of root `output.csv`
 |---|---|
 | **Runtime Environment** | macOS (Darwin 24.1.0) / Python 3.9.6 |
 | **Total Requests Processed** | 518 requests |
-| **Total Execution Time** | 0.41 seconds (3-run benchmark: 0.437s, 0.395s, 0.411s) |
-| **Average Latency Per Request** | 0.80 milliseconds / request |
+| **Total Execution Time** | 0.33 seconds (measured: 0.331s) |
+| **Average Latency Per Request** | 0.64 milliseconds / request |
 | **Peak Resident Memory (RSS)** | ~48 MB |
-| **Full Regression Suite Execution** | 102 tests passed in 0.940s |
+| **Full Regression Suite Execution** | 115 tests passed in 2.781s |
 
 ---
 

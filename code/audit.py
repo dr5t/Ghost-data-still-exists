@@ -268,6 +268,7 @@ class AuditEngine:
                 })
 
             # Phase 3: Post-remediation verification for all resources (empty evidence_id)
+            verified_resources = set()
             for item in violations + compliant:
                 op, st = verification_operation(item.data_category, is_complete=False)
                 raw_steps.append({
@@ -278,6 +279,21 @@ class AuditEngine:
                     "state": st,
                     "evidence_id": "",
                 })
+                verified_resources.add(item.resource_id)
+
+            # Two-hop resource verification: if any remediated item links back to a source account
+            for item in violations:
+                for ident in item.identifiers:
+                    if ident.startswith("account_") and ident not in verified_resources:
+                        raw_steps.append({
+                            "phase": "VERIFICATION",
+                            "system_id": "account_service",
+                            "resource_id": ident,
+                            "operation": "VERIFY_RECORD_ABSENT",
+                            "state": "ABSENT",
+                            "evidence_id": "",
+                        })
+                        verified_resources.add(ident)
         else:
             # Status is COMPLETE: only verification steps proving compliant state
             for item in compliant:
@@ -300,7 +316,7 @@ def write_output(results: Iterable[AuditResult], path: Path | str) -> None:
     """Writes audit results to CSV sorted deterministically by case_id."""
     sorted_results = sorted(results, key=lambda r: r.case_id)
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, lineterminator="\n")
         writer.writerow(["case_id", "deletion_status", "steps_json"])
         for r in sorted_results:
             writer.writerow([r.case_id, r.deletion_status, json.dumps(list(r.steps), separators=(",", ":"))])

@@ -1,4 +1,4 @@
-"""Focused contract tests for the Stage 3 audit orchestrator."""
+"""Focused contract and regression tests for the Stage 3 audit orchestrator."""
 
 import csv
 import json
@@ -11,11 +11,16 @@ from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from evidence import EvidenceItem
-from main import AuditEngine, AuditResult, write_output
+from audit import AuditEngine, AuditResult, write_output, sort_steps
+from identity import UserIdentityGraph
 
 
 class _Graph:
-    pass
+    def __init__(self, user_id="user_01", emails=None, phones=None, email_hashes=None):
+        self.user_id = user_id
+        self.emails = emails or {"person@example.test"}
+        self.phones = phones or set()
+        self.email_hashes = email_hashes or set()
 
 
 class _Resolver:
@@ -23,6 +28,9 @@ class _Resolver:
         self.graph = graph
 
     def resolve_by_email(self, _email):
+        return self.graph
+
+    def resolve(self, _email):
         return self.graph
 
 
@@ -34,22 +42,26 @@ class _Evidence:
         return [item for item in self.items if item.captured_at <= audit_at]
 
 
-def _item(resource, category, state, evidence_id="evidence_01", captured="2026-09-01T00:00:00Z"):
+def _item(resource, category, state, evidence_id="evidence_01", captured="2026-09-01T00:00:00Z", system=None):
     systems = {
         "USER_PROFILE": "account_service",
         "SEARCH_INDEX_ENTRY": "search_service",
         "ANALYTICS_PROFILE": "analytics_platform",
         "SECURITY_AUDIT_LOG": "security_service",
         "SUPPORT_MESSAGE": "support_platform",
+        "SUPPORT_ATTACHMENT": "support_platform",
         "DATA_FLOW": "integration_service",
         "BACKUP_ARCHIVE": "backup_service",
+        "ACCOUNT_TOMBSTONE": "identity_service",
+        "USER_EXPORT": "export_service",
     }
+    sys_name = system or systems.get(category, "account_service")
     return EvidenceItem(
         evidence_id=evidence_id,
         file_path="fixture",
         origin="fixture",
         captured_at=captured,
-        system_id=systems[category],
+        system_id=sys_name,
         resource_id=resource,
         data_category=category,
         state=state,
@@ -57,16 +69,19 @@ def _item(resource, category, state, evidence_id="evidence_01", captured="2026-0
     )
 
 
-def _request(text="Please permanently delete my account."):
+def _request(text="Please permanently delete my account.", audit_at="2026-09-15T00:00:00Z", email="person@example.test"):
     return {
         "case_id": "case_001",
-        "email": "person@example.test",
-        "audit_at": "2026-09-15T00:00:00Z",
+        "email": email,
+        "requested_at": "2026-08-15T00:00:00Z",
+        "reported_status": "COMPLETE",
+        "reported_at": "2026-09-01T00:00:00Z",
+        "audit_at": audit_at,
         "request_text": text,
     }
 
 
-class TestAuditEngine(unittest.TestCase):
+class TestAuditEngineContract(unittest.TestCase):
     def _engine(self, items, resolver=None):
         return AuditEngine(resolver or _Resolver(), _Evidence(items))
 
@@ -149,6 +164,27 @@ class TestAuditEngine(unittest.TestCase):
         self.assertEqual(result.deletion_status, "COMPLETE")
         self.assertEqual(result.steps[0]["evidence_id"], "evidence_02")
 
+    def test_pre_request_observation_does_not_prove_current_state(self):
+        items = [
+            _item(
+                "account_001",
+                "USER_PROFILE",
+                "PRESENT",
+                "evidence_stale",
+                "2026-08-01T00:00:00Z",
+            ),
+            _item(
+                "account_001",
+                "USER_PROFILE",
+                "ABSENT",
+                "evidence_current",
+                "2026-08-16T00:00:00Z",
+            ),
+        ]
+        result = self._engine(items).audit(_request())
+        self.assertEqual(result.deletion_status, "COMPLETE")
+        self.assertEqual(result.steps[0]["evidence_id"], "evidence_current")
+
     def test_unknown_identity_cannot_be_complete(self):
         result = self._engine([], _Resolver(graph=None)).audit(_request())
         self.assertEqual(result.deletion_status, "INCOMPLETE")
@@ -163,6 +199,98 @@ class TestAuditEngine(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
         self.assertEqual([row["case_id"] for row in rows], ["case_002", "case_010"])
         self.assertEqual([json.loads(row["steps_json"]) for row in rows], [[], []])
+
+
+class TestAuditEngineScenarios(unittest.TestCase):
+    """Specific scenario tests requested in Stage 3."""
+
+    def test_replica_drift_detected_as_incomplete(self):
+        """Primary marked deleted earlier, but read replica snapshot shows PRESENT -> INCOMPLETE."""
+        items = [
+            _item("account_001", "USER_PROFILE", "ABSENT", "evidence_primary", "2026-09-01T12:00:00Z"),
+            _item("account_001", "USER_PROFILE", "PRESENT", "evidence_replica", "2026-09-02T12:00:00Z"),
+        ]
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request())
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        finding_ops = [s["operation"] for s in result.steps if s["phase"] == "FINDING"]
+        self.assertIn("REPORT_REMAINING_RECORD", finding_ops)
+
+    def test_strict_audit_at_cutoff(self):
+        """Evidence captured after audit_at must be strictly excluded."""
+        items = [
+            _item("search_001", "SEARCH_INDEX_ENTRY", "PRESENT", "evidence_prior", "2026-09-10T00:00:00Z"),
+            _item("search_001", "SEARCH_INDEX_ENTRY", "ABSENT", "evidence_post", "2026-09-20T00:00:00Z"),
+        ]
+        # audit_at is 2026-09-15T00:00:00Z
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request(audit_at="2026-09-15T00:00:00Z"))
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        # Evidence cited must be evidence_prior, not evidence_post
+        finding_step = [s for s in result.steps if s["phase"] == "FINDING"][0]
+        self.assertEqual(finding_step["evidence_id"], "evidence_prior")
+
+    def test_tombstone_exposed_pii(self):
+        """An account tombstone that still exposes PII must produce REPORT_EXPOSED_PII -> REDACT_RECORD."""
+        items = [
+            _item("account_001", "USER_PROFILE", "ABSENT", "evidence_acc"),
+            _item("tombstone_001", "ACCOUNT_TOMBSTONE", "PRESENT", "evidence_tomb", system="identity_service"),
+        ]
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request())
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        self.assertEqual(result.steps[0]["operation"], "REPORT_EXPOSED_PII")
+        self.assertEqual(result.steps[0]["resource_id"], "tombstone_001")
+        self.assertEqual(result.steps[1]["operation"], "REDACT_RECORD")
+        self.assertEqual(result.steps[1]["state"], "REDACTED")
+
+    def test_active_sync_data_flow(self):
+        """Active data flow must produce REPORT_ACTIVE_DATA_FLOW -> DISABLE_DATA_FLOW -> VERIFY_DATA_FLOW_DISABLED."""
+        items = [
+            _item("account_001", "USER_PROFILE", "ABSENT", "evidence_acc"),
+            _item("flow_001", "DATA_FLOW", "ACTIVE", "evidence_flow"),
+        ]
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request())
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        ops = [s["operation"] for s in result.steps]
+        self.assertIn("REPORT_ACTIVE_DATA_FLOW", ops)
+        self.assertIn("DISABLE_DATA_FLOW", ops)
+        self.assertIn("VERIFY_DATA_FLOW_DISABLED", ops)
+
+    def test_restore_risk(self):
+        """Active backup archive must produce REPORT_RESTORE_RISK -> BLOCK_RESTORE -> VERIFY_RESTORE_BLOCKED."""
+        items = [
+            _item("account_001", "USER_PROFILE", "ABSENT", "evidence_acc"),
+            _item("backup_001", "BACKUP_ARCHIVE", "ACTIVE", "evidence_bak"),
+        ]
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request())
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        ops = [s["operation"] for s in result.steps]
+        self.assertIn("REPORT_RESTORE_RISK", ops)
+        self.assertIn("BLOCK_RESTORE", ops)
+        self.assertIn("VERIFY_RESTORE_BLOCKED", ops)
+
+    def test_deterministic_step_ordering_rule(self):
+        """Steps must strictly sort: FINDING -> REMEDIATION -> VERIFICATION, then by OP order, then system_id, resource_id."""
+        raw_steps = [
+            {"phase": "VERIFICATION", "operation": "VERIFY_RECORD_ABSENT", "system_id": "search_service", "resource_id": "search_02", "state": "ABSENT", "evidence_id": ""},
+            {"phase": "FINDING", "operation": "REPORT_REMAINING_RECORD", "system_id": "search_service", "resource_id": "search_01", "state": "PRESENT", "evidence_id": "ev_01"},
+            {"phase": "REMEDIATION", "operation": "DELETE_RECORD", "system_id": "search_service", "resource_id": "search_01", "state": "ABSENT", "evidence_id": ""},
+            {"phase": "FINDING", "operation": "REPORT_ACTIVE_DATA_FLOW", "system_id": "integration_service", "resource_id": "flow_01", "state": "ACTIVE", "evidence_id": "ev_02"},
+            {"phase": "REMEDIATION", "operation": "DISABLE_DATA_FLOW", "system_id": "integration_service", "resource_id": "flow_01", "state": "DISABLED", "evidence_id": ""},
+        ]
+        sorted_steps = sort_steps(raw_steps)
+        self.assertEqual([s["step_no"] for s in sorted_steps], [1, 2, 3, 4, 5])
+        # Findings first: REPORT_REMAINING_RECORD before REPORT_ACTIVE_DATA_FLOW
+        self.assertEqual(sorted_steps[0]["operation"], "REPORT_REMAINING_RECORD")
+        self.assertEqual(sorted_steps[1]["operation"], "REPORT_ACTIVE_DATA_FLOW")
+        # Remediation second: DISABLE_DATA_FLOW before DELETE_RECORD
+        self.assertEqual(sorted_steps[2]["operation"], "DISABLE_DATA_FLOW")
+        self.assertEqual(sorted_steps[3]["operation"], "DELETE_RECORD")
+        # Verification third
+        self.assertEqual(sorted_steps[4]["operation"], "VERIFY_RECORD_ABSENT")
 
 
 if __name__ == "__main__":

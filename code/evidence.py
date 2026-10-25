@@ -990,7 +990,12 @@ class EvidenceIndexer:
                     state = "PRESENT" if is_hit else "ABSENT"
                 elif res_id.startswith("support_"):
                     sys_id = "support_platform"
-                    if "attachment" in event or any("attachment" in k.get("event", "") for k in group):
+                    if any(k.get("source") == "legacy_contact_index" for k in group):
+                        # A legacy contact-index lookup stores a secondary
+                        # identifier, not a retained support conversation.
+                        cat = "SECONDARY_IDENTIFIER"
+                        state = "PRESENT"
+                    elif "attachment" in event or any("attachment" in k.get("event", "") for k in group):
                         cat = "SUPPORT_ATTACHMENT"
                         state = "PRESENT"
                     else:
@@ -999,10 +1004,17 @@ class EvidenceIndexer:
                         state = "PRESENT" if has_direct else "REDACTED"
                 elif res_id.startswith("analytics_"):
                     sys_id = "analytics_platform"
-                    cat = "ANALYTICS_PROFILE"
-                    id_fields = ["email", "phone", "customer_reference", "email_hash", "correlation_key"]
-                    has_id = any(bool(k.get(f)) and k.get(f) != "null" for k in group for f in id_fields)
-                    state = "PRESENT" if has_id else "ANONYMIZED"
+                    if any(k.get("email_opt_in") not in (None, "null") for k in group):
+                        # Explicit marketing-consent fields make this a
+                        # marketing profile even when the event was emitted by
+                        # the analytics platform.
+                        cat = "MARKETING_PROFILE"
+                        state = "PRESENT"
+                    else:
+                        cat = "ANALYTICS_PROFILE"
+                        id_fields = ["email", "phone", "customer_reference", "email_hash", "correlation_key"]
+                        has_id = any(bool(k.get(f)) and k.get(f) != "null" for k in group for f in id_fields)
+                        state = "PRESENT" if has_id else "ANONYMIZED"
                 elif res_id.startswith("audit_record_"):
                     sys_id = "security_service"
                     cat = "SECURITY_AUDIT_LOG"

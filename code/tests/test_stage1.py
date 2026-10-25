@@ -101,6 +101,28 @@ class TestStage1(unittest.TestCase):
         self.assertIn("tombstone_440", res_ids)
         self.assertIn("audit_record_6909", res_ids)
 
+    def test_legacy_contact_index_is_a_secondary_identifier(self):
+        """A contact-index trace is deleted rather than treated as a support chat."""
+        items = self.indexer.items_by_resource["support_002"]
+        self.assertTrue(
+            any(
+                item.evidence_id == "evidence_61"
+                and item.data_category == "SECONDARY_IDENTIFIER"
+                for item in items
+            )
+        )
+
+    def test_marketing_consent_trace_is_not_an_analytics_profile(self):
+        """Explicit email_opt_in provenance selects the marketing deletion rule."""
+        items = self.indexer.items_by_resource["analytics_9914"]
+        self.assertTrue(
+            any(
+                item.evidence_id == "evidence_01"
+                and item.data_category == "MARKETING_PROFILE"
+                for item in items
+            )
+        )
+
     def test_evidence_retrieval_case_34_image(self):
         """Test retrieval of image fact evidence_04 for case_34 (haruka.s1838@zoho.com)."""
         graph = self.resolver.resolve_by_email("haruka.s1838@zoho.com")
@@ -125,4 +147,3 @@ class TestStage1(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

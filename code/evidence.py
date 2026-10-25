@@ -344,6 +344,10 @@ class EvidenceIndexer:
                             sys_id = "export_service"
                             cat = "USER_EXPORT"
                             state = "PRESENT"
+                        elif res_id.startswith("legal_hold_") or coll in ("retained_order_records", "legal_holds"):
+                            sys_id = "legal_service"
+                            cat = "LEGAL_HOLD_RECORD"
+                            state = "PRESENT"
                         elif res_id.startswith("tombstone_"):
                             sys_id = "identity_service"
                             cat = "ACCOUNT_TOMBSTONE"
@@ -419,6 +423,10 @@ class EvidenceIndexer:
                     elif "audit" in tbl or "security" in tbl:
                         sys_id = "security_service"
                         cat = "SECURITY_AUDIT_LOG"
+                        state = "PRESENT"
+                    elif "legal" in tbl or res_id.startswith("legal_hold_"):
+                        sys_id = "legal_service"
+                        cat = "LEGAL_HOLD_RECORD"
                         state = "PRESENT"
                     elif "support" in tbl:
                         sys_id = "support_platform"
@@ -884,6 +892,19 @@ class EvidenceIndexer:
                     sys_id = "security_service"
                     cat = "SECURITY_AUDIT_LOG"
                     state = "PRESENT"
+                elif res_id.startswith("legal_hold_"):
+                    sys_id = "legal_service"
+                    cat = "LEGAL_HOLD_RECORD"
+                    state = "PRESENT"
+                elif res_id.startswith("backup_"):
+                    sys_id = "backup_service"
+                    cat = "BACKUP_ARCHIVE"
+                    state = "ACTIVE" if (rec.get("restore_allowed") in (True, "true", "1", 1) or rec.get("status") == "ACTIVE") else "BLOCKED"
+                elif res_id.startswith("tombstone_"):
+                    sys_id = "identity_service"
+                    cat = "ACCOUNT_TOMBSTONE"
+                    has_pii = bool(rec.get("email") or rec.get("phone") or rec.get("name") or rec.get("email_hash"))
+                    state = "PRESENT" if has_pii else "REDACTED"
 
                 self._add_item(
                     EvidenceItem(
@@ -1066,6 +1087,10 @@ class EvidenceIndexer:
                 elif res_id.startswith("audit_record_"):
                     sys_id = "security_service"
                     cat = "SECURITY_AUDIT_LOG"
+                    state = "PRESENT"
+                elif res_id.startswith("legal_hold_") or origin == "legal_service" or kvs.get("service") == "legal_service" or cat == "LEGAL_HOLD_RECORD":
+                    sys_id = "legal_service"
+                    cat = "LEGAL_HOLD_RECORD"
                     state = "PRESENT"
                 elif res_id.startswith("data_flow_"):
                     sys_id = "integration_service"

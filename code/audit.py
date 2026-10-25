@@ -210,7 +210,8 @@ class AuditEngine:
                 if not is_violation(latest_item.data_category, latest_item.state):
                     resource_evidence[res_id] = latest_item
                 else:
-                    resource_evidence[res_id] = violations_in_group[-1]
+                    pre_violations = [it for it in violations_in_group if manifest_dict.get(it.evidence_id, {}).get("captured_at", it.captured_at) <= audit_at]
+                    resource_evidence[res_id] = pre_violations[-1] if pre_violations else violations_in_group[-1]
             else:
                 resource_evidence[res_id] = sorted_items[-1]
 
@@ -229,24 +230,30 @@ class AuditEngine:
             else:
                 compliant.append(item)
 
-        # Determine overall case deletion status
-        status = "INCOMPLETE" if len(violations) > 0 else "COMPLETE"
+        # A case can only be COMPLETE if there are no violations AND every compliant item was captured at or before audit_at
+        has_post_cutoff_compliant = any(
+            manifest_dict.get(it.evidence_id, {}).get("captured_at", it.captured_at) > audit_at
+            for it in compliant
+        )
+        status = "INCOMPLETE" if (len(violations) > 0 or has_post_cutoff_compliant) else "COMPLETE"
 
         # 6. Generate steps
         raw_steps: List[dict] = []
 
         if status == "INCOMPLETE":
-            # Phase 1: Findings (cite participant-visible evidence)
+            # Phase 1: Findings (cite participant-visible evidence available at or before audit_at)
             for item in violations:
-                op, st = finding_operation(item.data_category, item.state)
-                raw_steps.append({
-                    "phase": "FINDING",
-                    "system_id": item.system_id,
-                    "resource_id": item.resource_id,
-                    "operation": op,
-                    "state": st,
-                    "evidence_id": item.evidence_id,
-                })
+                file_cap = manifest_dict.get(item.evidence_id, {}).get("captured_at", item.captured_at)
+                if file_cap <= audit_at:
+                    op, st = finding_operation(item.data_category, item.state)
+                    raw_steps.append({
+                        "phase": "FINDING",
+                        "system_id": item.system_id,
+                        "resource_id": item.resource_id,
+                        "operation": op,
+                        "state": st,
+                        "evidence_id": item.evidence_id,
+                    })
 
             # Phase 2: Remediation (empty evidence_id)
             for item in violations:

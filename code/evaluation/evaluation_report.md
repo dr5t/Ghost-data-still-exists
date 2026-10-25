@@ -29,7 +29,7 @@ Evaluation on `dataset/sample_deletion_requests.csv` against `dataset/sample_out
 | **Exact Row String Agreement** | **10 / 32** | **31.2%** | Exact byte-for-byte match with sample CSV |
 | **Parsed `steps_json` Exact Agreement** | **11 / 32** | **34.4%** | Identical array of step dictionaries |
 | **Structural Step Sequence Agreement** | **11 / 32** | **34.4%** | Identical `(phase, operation, system_id, resource_id)` |
-| **Permanent Unit & Regression Suite** | **110 / 110** | **100%** | Passing in 2.650s |
+| **Permanent Unit & Regression Suite** | **112 / 112** | **100%** | Passing in 3.530s |
 
 ### Diagnostic Analysis of the 21 Sample Mismatches
 
@@ -60,14 +60,14 @@ Execution of `code/main.py` across all 518 evaluation requests in `dataset/delet
 - **Total Valid Output Rows**: 518
 - **Unique `case_id` Alignment**: 100% (sorted identically to input)
 - **CSV Header**: `case_id,deletion_status,steps_json`
-- **Total Steps Emitted**: 2,731 steps
+- **Total Steps Emitted**: 2,714 steps
 
 ### Status Distribution
 
 | Status | Count | Percentage | Description |
 |---|---|---|---|
-| `INCOMPLETE` | 365 | 70.5% | Genuine deletion requests with unfulfilled policy requirements or remaining evidence |
-| `COMPLETE` | 143 | 27.6% | Verified complete deletions with evidence-backed compliance at `audit_at` |
+| `INCOMPLETE` | 373 | 72.0% | Genuine deletion requests with unfulfilled policy requirements or remaining evidence |
+| `COMPLETE` | 135 | 26.1% | Verified complete deletions with evidence-backed compliance at `audit_at` |
 | `NOT_APPLICABLE` | 10 | 1.9% | Access requests, data rectification, or marketing opt-outs (`steps_json=[]`) |
 
 ### Step and Field Validation Metrics

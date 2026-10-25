@@ -612,6 +612,40 @@ class TestAuditEngineScenarios(unittest.TestCase):
         self.assertEqual(res_24.steps[0]["evidence_id"], "evidence_92")
         self.assertEqual(res_24.steps[6]["resource_id"], "audit_record_7095")
 
+    def test_legal_hold_record_recognition_and_retention(self):
+        """Legal hold records must be classified under legal_service / LEGAL_HOLD_RECORD and preserved under policy."""
+        from policy import is_violation
+        from evidence import EvidenceIndexer
+        indexer = EvidenceIndexer("dataset")
+        # Check that any indexed legal hold item is correctly categorized
+        legal_items = [it for it in indexer.items if it.data_category == "LEGAL_HOLD_RECORD"]
+        self.assertTrue(len(legal_items) > 0)
+        for it in legal_items:
+            self.assertEqual(it.system_id, "legal_service")
+            self.assertEqual(it.data_category, "LEGAL_HOLD_RECORD")
+            # Present legal hold records must not be flagged as violations
+            self.assertFalse(is_violation("LEGAL_HOLD_RECORD", "PRESENT"))
+
+    def test_no_post_cutoff_evidence_citations(self):
+        """No finding or complete verification step may cite an evidence file captured after audit_at."""
+        import csv
+        from main import build_engine
+        engine = build_engine("dataset")
+        manifest = engine.evidence.manifest
+
+        with open("dataset/sample_deletion_requests.csv", encoding="utf-8") as f:
+            for req in csv.DictReader(f):
+                res = engine.audit(req)
+                audit_at = req["audit_at"]
+                for step in res.steps:
+                    eid = step.get("evidence_id")
+                    if eid:
+                        file_cap = manifest.get(eid, {}).get("captured_at", "")
+                        self.assertTrue(
+                            file_cap <= audit_at,
+                            f"Case {req['case_id']} cited post-cutoff {eid} (captured_at={file_cap} > audit_at={audit_at})",
+                        )
+
 
 if __name__ == "__main__":
     unittest.main()

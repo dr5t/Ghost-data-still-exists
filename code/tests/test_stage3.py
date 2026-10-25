@@ -292,6 +292,99 @@ class TestAuditEngineScenarios(unittest.TestCase):
         # Verification third
         self.assertEqual(sorted_steps[4]["operation"], "VERIFY_RECORD_ABSENT")
 
+    def test_same_resource_supersession(self):
+        """Later observation of the same canonical resource supersedes an earlier violation."""
+        items = [
+            _item("account_001", "USER_PROFILE", "PRESENT", "evidence_01", "2026-09-01T10:00:00Z"),
+            _item("account_001", "USER_PROFILE", "ABSENT", "evidence_02", "2026-09-02T10:00:00Z"),
+        ]
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request())
+        self.assertEqual(result.deletion_status, "COMPLETE")
+        self.assertEqual(len(result.steps), 1)
+        self.assertEqual(result.steps[0]["resource_id"], "account_001")
+        self.assertEqual(result.steps[0]["evidence_id"], "evidence_02")
+
+    def test_different_resource_observations_in_same_batch(self):
+        """Different resources in the same service do not supersede or mask each other."""
+        items = [
+            _item("account_001", "USER_PROFILE", "ABSENT", "evidence_01", "2026-09-01T10:00:00Z"),
+            _item("account_002", "USER_PROFILE", "PRESENT", "evidence_01", "2026-09-01T10:00:00Z"),
+        ]
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request())
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        finding_resources = [s["resource_id"] for s in result.steps if s["phase"] == "FINDING"]
+        self.assertIn("account_002", finding_resources)
+
+    def test_conflicting_observations_replication_drift(self):
+        """Earlier compliant state followed by later violation proves replication drift / non-compliance."""
+        items = [
+            _item("account_001", "USER_PROFILE", "ABSENT", "evidence_01", "2026-09-01T10:00:00Z"),
+            _item("account_001", "USER_PROFILE", "PRESENT", "evidence_02", "2026-09-03T10:00:00Z"),
+        ]
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request())
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        self.assertEqual(result.steps[0]["operation"], "REPORT_REMAINING_RECORD")
+        self.assertEqual(result.steps[0]["evidence_id"], "evidence_02")
+
+    def test_evidence_beyond_audit_cutoff_excluded(self):
+        """Observations captured after audit_at must never be used to establish pre-cutoff findings or state."""
+        items = [
+            _item("account_001", "USER_PROFILE", "PRESENT", "evidence_01", "2026-09-10T10:00:00Z"),
+            _item("account_001", "USER_PROFILE", "ABSENT", "evidence_post", "2026-09-20T10:00:00Z"),
+        ]
+        # audit_at is 2026-09-15
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request(audit_at="2026-09-15T00:00:00Z"))
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        self.assertEqual(result.steps[0]["evidence_id"], "evidence_01")
+
+    def test_missing_or_ambiguous_identity_linkage(self):
+        """Unresolved identity returns INCOMPLETE without fabricating ungrounded claims."""
+        engine = AuditEngine(_Resolver(graph=None), _Evidence([]))
+        result = engine.audit(_request())
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        self.assertEqual(result.steps, ())
+
+    def test_pre_request_tombstone_excluded_from_verification(self):
+        """Pre-request compliant tombstone is excluded and not cited as proof of a later deletion request."""
+        items = [
+            _item("tombstone_001", "ACCOUNT_TOMBSTONE", "REDACTED", "evidence_pre", "2026-03-01T00:00:00Z", system="identity_service"),
+        ]
+        # requested_at is 2026-08-15
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request())
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        self.assertEqual(len(result.steps), 0)
+
+    def test_post_request_tombstone_included_in_verification(self):
+        """Post-request tombstone properly redacted is included as proof of compliant tombstone preservation."""
+        items = [
+            _item("account_001", "USER_PROFILE", "ABSENT", "evidence_01", "2026-08-20T00:00:00Z"),
+            _item("tombstone_001", "ACCOUNT_TOMBSTONE", "REDACTED", "evidence_02", "2026-08-20T00:00:00Z", system="identity_service"),
+        ]
+        # requested_at is 2026-08-15
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request())
+        self.assertEqual(result.deletion_status, "COMPLETE")
+        tomb_steps = [s for s in result.steps if s["resource_id"] == "tombstone_001"]
+        self.assertEqual(len(tomb_steps), 1)
+        self.assertEqual(tomb_steps[0]["operation"], "VERIFY_RECORD_REDACTED")
+        self.assertEqual(tomb_steps[0]["evidence_id"], "evidence_02")
+
+    def test_pre_request_exposed_tombstone_retained_as_violation(self):
+        """Pre-request tombstone that exposes PII remains an active violation until fixed."""
+        items = [
+            _item("tombstone_001", "ACCOUNT_TOMBSTONE", "PRESENT", "evidence_pre", "2026-03-01T00:00:00Z", system="identity_service"),
+        ]
+        engine = AuditEngine(_Resolver(), _Evidence(items))
+        result = engine.audit(_request())
+        self.assertEqual(result.deletion_status, "INCOMPLETE")
+        self.assertEqual(result.steps[0]["operation"], "REPORT_EXPOSED_PII")
+        self.assertEqual(result.steps[0]["resource_id"], "tombstone_001")
+
 
 if __name__ == "__main__":
     unittest.main()

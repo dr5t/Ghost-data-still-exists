@@ -174,6 +174,9 @@ class AuditEngine:
         # a strictly later verified compliant snapshot.
         resource_items: Dict[Tuple[str, str, str], List[EvidenceItem]] = {}
         for item in evidence_items:
+            # Pre-request compliant observations cannot verify fulfillment of a later deletion request
+            if requested_at and item.captured_at < requested_at and not is_violation(item.data_category, item.state):
+                continue
             key = (item.system_id, item.resource_id, item.data_category)
             resource_items.setdefault(key, []).append(item)
 
